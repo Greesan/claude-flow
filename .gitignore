@@ -1,0 +1,13 @@
+# Python / tool caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Machine-local logs
+logs/
+
+# Python packaging
+.venv/
+dist/
+*.egg-info/

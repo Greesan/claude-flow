@@ -1,0 +1,26 @@
+{
+  "checkpoint": "typed-decisions",
+  "revision": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+  "field": "answers.<qid>.answer_confidence",
+  "question_shape": "choice, 2-4 options, no 'none' option",
+  "target_precision": 0.9,
+  "act_threshold_fit_all": 0.6608,
+  "cross_validation": {
+    "shipped": {
+      "held_out_acted": 10,
+      "held_out_n": 35,
+      "held_out_right": 7,
+      "held_out_precision": 0.7
+    },
+    "refit": {
+      "held_out_acted": 16,
+      "held_out_n": 35,
+      "held_out_right": 13,
+      "held_out_precision": 0.812
+    }
+  },
+  "n_cases": 35,
+  "note": "35 hand-written cases; thresholds are indicative. Refit on logged real decisions.",
+  "recommended_act_threshold": 0.7,
+  "recommendation": "Gate on shipped answer_confidence >= 0.70 (no client-side temperature). Below it, or usage.truncated, fall back to Claude. Log every decision; refit after ~200 labelled real decisions."
+}

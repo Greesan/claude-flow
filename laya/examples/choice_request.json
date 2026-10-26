@@ -1,0 +1,18 @@
+{
+  "model": "english",
+  "state": {
+    "command": "npm install",
+    "error_tail": "npm ERR! code ETIMEDOUT\nnpm ERR! network request to https://registry.npmjs.org/react failed, reason: connect ETIMEDOUT 104.16.0.35:443"
+  },
+  "questions": {
+    "recovery": {
+      "type": "choice",
+      "instructions": "Which recovery path fits this failure?",
+      "criteria": {
+        "reauth": "credentials or token are missing, expired or rejected; re-authenticate",
+        "fix_tests": "tests or assertions failed; inspect and fix the failing test",
+        "retry_network": "network, DNS or timeout problem; wait and retry"
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+about: 'git push, recovering from: remote ahead (rebase, never force), HTTPS auth (switch the remote to SSH), transient network
+  (wait, retry). Anything else goes to Claude.'
+inputs:
+  remote:
+    type: string
+    default: origin
+    pattern: '[A-Za-z0-9._-]+'
+    help: remote to push to
+env:
+  GIT_SSH_COMMAND: ssh -o BatchMode=yes -o ConnectTimeout=10
+start: push
+nodes:
+  push:
+    type: run
+    cmd: git push {{ inputs.remote }}
+    effect: idempotent
+    timeout: 120
+    ok: done
+    recover:
+    - id: rebase_remote_ahead
+      status: promoted
+      when: the remote has commits we do not have (push rejected, fetch first or non-fast-forward); pull with rebase, then
+        push again
+      match: rejected.*\((fetch first|non-fast-forward)\)
+      to: pull_rebase
+    - id: ssh_remote
+      status: promoted
+      when: HTTPS credentials missing or rejected, or password authentication not supported; switch the remote to SSH
+      match: could not read Username|Authentication failed|Password authentication is not supported|Invalid username or (password|token)
+      to: confirm_ssh
+    - id: network_retry
+      status: promoted
+      when: transient network, DNS, timeout or connection reset or refused problem; wait, then push again
+      match: Could not resolve host|Connection timed out|Operation timed out|Connection refused|Connection reset
+      to: wait_retry
+  pull_rebase:
+    type: run
+    effect: idempotent
+    cmd: git pull --rebase {{ inputs.remote }}
+    timeout: 120
+    ok: push
+    fail: rebase_abort
+  rebase_abort:
+    type: run
+    cmd: git rebase --abort; git status --short | head -20
+    effect: idempotent
+    ok: resolve_conflict
+    fail: resolve_conflict
+  resolve_conflict:
+    type: human
+    say: Rebasing onto {{ inputs.remote }} hit conflicts, so the rebase was aborted (local commits are intact). Merge or rebase
+      by hand, then resume to push.
+    next: push
+  confirm_ssh:
+    type: confirm
+    say: The HTTPS push to {{ inputs.remote }} was refused. Switch {{ inputs.remote }} from https://<host>/<owner>/<repo>
+      to git@<host>:<owner>/<repo> and push again?
+    next: set_ssh
+  set_ssh:
+    type: run
+    script: https-to-ssh.sh
+    args:
+    - '{{ inputs.remote }}'
+    effect: once
+    ok: push
+  wait_retry:
+    type: run
+    cmd: sleep 5
+    effect: read
+    ok: push
+  done:
+    type: end
+    say: Pushed to {{ inputs.remote }}. {{ last_output }}

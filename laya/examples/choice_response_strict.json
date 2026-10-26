@@ -1,0 +1,19 @@
+{
+    "model": "laya-rl-agent",
+    "answers": {
+        "recovery": {
+            "type": "choice",
+            "choice": "retry_network",
+            "confidence": 0.4002,
+            "probabilities": {
+                "reauth": 0.0837,
+                "fix_tests": 0.1284,
+                "retry_network": 0.7879
+            }
+        }
+    },
+    "usage": {
+        "input_tokens": 120,
+        "output_tokens": 0
+    }
+}
