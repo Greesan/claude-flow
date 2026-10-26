@@ -105,20 +105,30 @@ def run_hook(name, payload, monkeypatch, capsys):
     return code, capsys.readouterr()
 
 
+def session_start(source, monkeypatch, capsys):
+    """(text Claude gets, line the user sees) from the session-start hook; ("", "") when it says nothing."""
+    code, io_ = run_hook("session-start", {"source": source}, monkeypatch, capsys)
+    assert code == 0
+    if not io_.out.strip():
+        return "", ""
+    d = json.loads(io_.out)
+    return d["hookSpecificOutput"]["additionalContext"], d["systemMessage"]
+
+
 def test_session_start_lists_flows_and_runs_within_limit(isolated, monkeypatch, capsys):
     s, _ = failing(isolated)
     r = start(s)
     for i in range(8):
         make(f"g{i}", {"start": "done", "nodes": {"done": {"type": "end"}}})
-    code, io_ = run_hook("session-start", {"source": "compact"}, monkeypatch, capsys)
-    lines = io_.out.strip().splitlines()
-    assert code == 0 and len(lines) <= hooks.MAX_LINES
+    text, seen = session_start("compact", monkeypatch, capsys)
+    lines = text.splitlines()
+    assert len(lines) <= hooks.MAX_LINES
     assert any("Saved flows" in x for x in lines) and any(r["run"] in x and "flow learn f" in x for x in lines)
+    assert seen == "flow: 9 saved flows · 1 run in progress"
 
 
 def test_session_start_is_silent_with_nothing_to_say(monkeypatch, capsys):
-    code, io_ = run_hook("session-start", {"source": "startup"}, monkeypatch, capsys)
-    assert code == 0 and io_.out == ""
+    assert session_start("startup", monkeypatch, capsys) == ("", "")
 
 
 def test_hooks_never_break_a_session(isolated, monkeypatch, capsys):
@@ -223,12 +233,22 @@ def test_miner_counts_subagents_and_flow_usage(isolated):
     assert u["apk-build"]["by_subagent"] == 2 and u["apk-build"]["statuses"] == {"done": 2}
     assert u["git-push-recovery"]["by_main"] == 2 and u["git-push-recovery"]["sessions"] == 2
     seq = next(c for c in mine.list_candidates() if c["kind"] == "sequence")
-    assert "flow" not in seq["title"] and seq["sessions"] == 2 and mine.worth_mentioning({**seq, "status": "new"})
+    assert "flow" not in seq["title"] and seq["sessions"] == 2
+    assert not mine.worth_mentioning(mine.get_candidate(seq["id"]))   # repeated, but nobody had to step in
 
 
-def test_single_session_without_corrections_is_not_mentioned():
-    c = {"status": "new", "covered_by": None, "sessions": 1, "corrected": 0}
-    assert not mine.worth_mentioning(c) and mine.worth_mentioning({**c, "corrected": 1})
+@pytest.mark.parametrize("change,mentioned", [
+    ({}, True),
+    ({"corrected": 0}, False),        # nobody stepped in
+    ({"resolved": 0}, False),         # never fixed: no clear fix to save
+    ({"calls_lost": 1}, False),       # a plain retry: a flow would not save anything
+    ({"kind": "sequence"}, False),    # repetition alone is not pushed
+    ({"covered_by": "x"}, False),
+])
+def test_mention_rule_needs_intervention_a_clear_fix_and_real_cost(change, mentioned):
+    c = {"status": "new", "covered_by": None, "kind": "struggle", "sessions": 1, "corrected": 1, "resolved": 1,
+         "calls_lost": 2}
+    assert mine.worth_mentioning({**c, **change}) is mentioned
 
 
 def test_timing_marks_slow_flows_from_measured_runs(monkeypatch, capsys):
@@ -239,7 +259,7 @@ def test_timing_marks_slow_flows_from_measured_runs(monkeypatch, capsys):
     assert tm["runs"] == 3 and tm["p90"] < 1 and set(tm["steps"]) == {"a"} and tm["steps"]["a"]["runs"] == 3
     assert "avg" in __import__("flowkit.mermaid").mermaid.to_mermaid(s.load(), timing=tm)
     monkeypatch.setattr(hooks, "SLOW_AFTER", -1)
-    out = run_hook("session-start", {"source": "resume"}, monkeypatch, capsys)[1].out
+    out, _ = session_start("resume", monkeypatch, capsys)
     assert "- t (avg 0s over 3 runs):" in out and "Slow (p90 > -1s here): t" in out
 
 

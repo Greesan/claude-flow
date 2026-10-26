@@ -155,6 +155,15 @@ def action_keys(c):
     return [k for k in c["keys"] if k != "(noise)" and not is_diagnostic(k)]
 
 
+def _seconds(t0, t1):
+    from datetime import datetime
+    try:
+        return round((datetime.fromisoformat(t1.replace("Z", "+00:00")) - datetime.fromisoformat(t0.replace("Z", "+00:00")))
+                     .total_seconds())
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def find_struggles(cmds, human):
     """One per failing command: its first action step failed, then whatever it took to get that step to succeed.
     Commands whose steps are all diagnostics are skipped: `grep`/`ls`/`which` exiting 1 usually means "not found"."""
@@ -180,7 +189,9 @@ def find_struggles(cmds, human):
             "looked_at": list(dict.fromkeys(d for x in between for d in x["keys"]
                                             if d != "(noise)" and is_diagnostic(d)))[:6],
             "typed_prompts_between": len(said),
-            "corrections": [h["text"] for h in said if h.get("correction_hint") or h.get("weak_hint")][:3],
+            # only messages that open like a correction ("no", "wait", "you forgot"...): the user had to step in
+            "corrections": [h["text"] for h in said if h.get("correction_hint")][:3],
+            "elapsed_s": _seconds(t0, t1),
             "uncertain": any(x["piped"] for x in span), "cmd_example": c["cmd"],
             "window": [{k2: x[k2] for k2 in ("cmd", "cwd", "status")} for x in span if not is_noise(x)][:12],
         })
@@ -285,6 +296,8 @@ def candidates(sessions):
                     "steps": [key, *fix], "score": score, "occurrences": len(gs),
                     "sessions": n_sess, "projects": sorted({s["project"] for s, _ in items}),
                     "corrected": sum(len(g["corrections"]) for g in gs),
+                    "calls_lost": sum(g["calls_until_success"] or 0 for g in gs if g["resolved"]),
+                    "time_lost_s": sum(g.get("elapsed_s") or 0 for g in gs if g["resolved"]),
                     "resolved": sum(g["resolved"] for g in gs), "covered_by": covered({key, *fix}),
                     "overlap": overlap({key, *fix}),
                     "evidence": [{"session": s["session"][:8], "project": s["project"], "attempts": g["attempts"],
@@ -417,13 +430,23 @@ def draft_brief(c, name):
 
 
 def worth_mentioning(c):
-    """New, not covered by a flow, and either seen in 2+ sessions or something the user had to correct.
-    (The score only orders candidates; it is not a threshold.)"""
-    return c["status"] == "new" and not c["covered_by"] and (c["sessions"] >= 2 or c.get("corrected", 0) > 0)
+    """Only procedures that needed the user, have a known fix, and cost real work, so a flow clearly saves time:
+      - the user stepped in: a real correction while Claude was stuck
+      - there is a clear fix: the failing step succeeded in the end, so the fix is in the transcript
+      - it cost work: the fix took at least a fix step and a retry (2+ calls a single flow call would replace)
+    Repeated sequences and loops without intervention are listed by `flow candidates` but never pushed."""
+    return (c["status"] == "new" and not c["covered_by"] and c["kind"] == "struggle" and c.get("corrected", 0) > 0
+            and c.get("resolved", 0) > 0 and c.get("calls_lost", 0) >= 2)
 
 
 def _evidence(c):
     return {"sessions": c["sessions"], "occurrences": c["occurrences"], "corrected": c.get("corrected", 0)}
+
+
+def _cost(c):
+    mins = (c.get("time_lost_s") or 0) / 60
+    took = f"~{mins:.0f} min" if mins >= 1 else f"{c.get('time_lost_s') or 0}s"
+    return f"you stepped in {c['corrected']}x; it took {c['calls_lost']} extra steps, {took}"
 
 
 def _has_new_evidence(c, shown):
@@ -445,13 +468,14 @@ def nudge():
     proj = os.environ.get("CLAUDE_PROJECT_DIR", "")
     here = [c for c in cs if any(proj.replace("/", "-").endswith(p.lstrip("-")) or p.endswith(proj.replace("/", "-"))
                                  for p in c["projects"])] if proj else []
-    pick = (here or cs)[:3]
+    pick = sorted(here or cs, key=lambda c: -(c.get("time_lost_s") or 0))
     shown.update({c["id"]: _evidence(c) for c in pick})
     MINE.mkdir(parents=True, exist_ok=True)
     _atomic_write(MINE / "nudged.json", json.dumps(shown))
-    return ("flow miner: the user keeps repeating or correcting " + str(len(cs)) + " procedures that have no flow yet (e.g. "
-            + "; ".join(f"{c['id']} {c['title'][:60]}" for c in pick) + "). When there is a natural pause, turn one into a "
-            "flow yourself (`flow draft <id> --as <name>`, write it, test it), then tell the user what you saved.")
+    listed = "; ".join(f"{c['id']} {c['title'][:60]} ({_cost(c)})" for c in pick)
+    return ("flow miner: these procedures needed the user to step in and have a clear fix, but no flow yet: " + listed
+            + ". When there is a natural pause, turn them into flows yourself (`flow draft <id> --as <name>`, write it, "
+            "test it), then tell the user what you saved.")
 
 
 def usage(flow=None):
