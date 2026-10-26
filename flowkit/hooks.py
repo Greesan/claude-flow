@@ -102,9 +102,10 @@ def pre_compact(p):
     return 0
 
 
-def session_end(p):
-    tp = p.get("transcript_path")
-    mine.mine([tp] if tp else None)
+def session_end(_p):
+    # Sweep every transcript, not just this one: re-reading is skipped for files whose size and time are unchanged,
+    # so this is cheap, and it also picks up sessions that ended without this hook (a crash or a killed terminal).
+    mine.mine()
     return 0
 
 

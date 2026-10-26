@@ -89,14 +89,15 @@ def parse_file(path, is_sub, parent):
                         if name == "Bash" and is_flow_call(inp.get("command")):
                             m = re.search(r"\bflow(?:\.py)?\s+(\w+)\s+([\w-]+)", inp["command"])
                             fc = {"ts": ts, "verb": m.group(1) if m else "?", "flow": m.group(2) if m else "?",
-                                  "subagent": is_sub, "status": None}
+                                  "subagent": is_sub, "status": None, "tid": tid}
                             s["flow_calls"].append(fc)
                             cmds_by_tid[tid] = fc  # gets the run's status from the tool result below
                         elif name == "Bash":
                             raw = inp.get("command") or ""
                             keys, piped = cmd_keys(raw)
                             entry = {"i": len(s["commands"]), "ts": ts, "cwd": re.sub(r"/home/[^/\s]+", "~", rec.get("cwd") or ""),
-                                     "cmd": norm_cmd(raw), "keys": keys or ["(noise)"], "piped": piped, "status": None}
+                                     "cmd": norm_cmd(raw), "keys": keys or ["(noise)"], "piped": piped, "status": None,
+                                     "tid": tid}
                             s["commands"].append(entry)
                             cmds_by_tid[tid] = entry
                             for p in bash_paths_re(scrub(raw)):
@@ -312,6 +313,21 @@ def _load(name, default):
     return json.loads(p.read_text()) if p.exists() else default
 
 
+def dedupe(sessions):
+    """Count each tool call once. If Claude Code ever copies history into a new transcript (e.g. on resume), the copied
+    calls keep their ids; only the earliest file keeps them, so one session can't look like two."""
+    seen = set()
+    for s in sorted(sessions, key=lambda s: s.get("first_ts") or ""):
+        for key in ("commands", "flow_calls"):
+            fresh = [c for c in s.get(key, []) if not c.get("tid") or c["tid"] not in seen]
+            seen |= {c["tid"] for c in s.get(key, []) if c.get("tid")}
+            if len(fresh) != len(s.get(key, [])):
+                s[key] = fresh
+                if key == "commands":
+                    s["struggles"] = find_struggles(fresh, s["human"])
+    return sessions
+
+
 def mine(paths=None):
     """Parse new/changed transcripts (incremental) and rebuild candidates. Returns a short summary."""
     MINE.mkdir(parents=True, exist_ok=True)
@@ -340,8 +356,8 @@ def mine(paths=None):
         index[str(f)] = {"stamp": stamp, "cache": key}
         parsed += 1
     _atomic_write(MINE / "index.json", json.dumps(index))
-    sessions = [json.loads((cache_dir / f"{v['cache']}.json").read_text()) for k, v in index.items()
-                if (cache_dir / f"{v['cache']}.json").exists() and not skip & set(Path(k).parts)]
+    sessions = dedupe([json.loads((cache_dir / f"{v['cache']}.json").read_text()) for k, v in index.items()
+                       if (cache_dir / f"{v['cache']}.json").exists() and not skip & set(Path(k).parts)])
     status = _load("status.json", {})
     cands = candidates(sessions)
     for c in cands:
@@ -406,16 +422,33 @@ def worth_mentioning(c):
     return c["status"] == "new" and not c["covered_by"] and (c["sessions"] >= 2 or c.get("corrected", 0) > 0)
 
 
+def _evidence(c):
+    return {"sessions": c["sessions"], "occurrences": c["occurrences"], "corrected": c.get("corrected", 0)}
+
+
+def _has_new_evidence(c, shown):
+    """True if never mentioned, or seen in more sessions / more often / corrected more since the last mention.
+    Reopening a session adds no evidence, so nothing repeats; heavy use adds evidence, so mentions keep coming."""
+    before = shown.get(c["id"])
+    if not isinstance(before, dict):
+        return True
+    return any(v > before.get(k, 0) for k, v in _evidence(c).items())
+
+
 def nudge():
     """One line for a SessionStart hook: only when there is something new worth automating."""
     data = _load("candidates.json", {"candidates": []})
-    cs = [c for c in data["candidates"] if worth_mentioning(c)]
+    shown = _load("nudged.json", {})
+    cs = [c for c in data["candidates"] if worth_mentioning(c) and _has_new_evidence(c, shown)]
     if not cs:
         return ""
     proj = os.environ.get("CLAUDE_PROJECT_DIR", "")
     here = [c for c in cs if any(proj.replace("/", "-").endswith(p.lstrip("-")) or p.endswith(proj.replace("/", "-"))
                                  for p in c["projects"])] if proj else []
     pick = (here or cs)[:3]
+    shown.update({c["id"]: _evidence(c) for c in pick})
+    MINE.mkdir(parents=True, exist_ok=True)
+    _atomic_write(MINE / "nudged.json", json.dumps(shown))
     return ("flow miner: the user keeps repeating or correcting " + str(len(cs)) + " procedures that have no flow yet (e.g. "
             + "; ".join(f"{c['id']} {c['title'][:60]}" for c in pick) + "). When there is a natural pause, turn one into a "
             "flow yourself (`flow draft <id> --as <name>`, write it, test it), then tell the user what you saved.")
@@ -424,8 +457,8 @@ def nudge():
 def usage(flow=None):
     """How flows are actually used, from transcripts: runs by main agent vs subagents, and how they ended."""
     out = {}
-    for f in (MINE / "sessions").glob("*.json") if (MINE / "sessions").is_dir() else []:
-        s = json.loads(f.read_text())
+    cached = [json.loads(f.read_text()) for f in (MINE / "sessions").glob("*.json")] if (MINE / "sessions").is_dir() else []
+    for s in dedupe(cached):
         for fc in s.get("flow_calls", []):
             if flow and fc["flow"] != flow:
                 continue

@@ -274,3 +274,46 @@ def test_approve_guard_uses_pause_time_when_output_was_reformatted(isolated, mon
     t.recs.pop()
     t.write()
     assert run_hook("approve-guard", payload, monkeypatch, capsys)[0] == 2
+
+
+# ---------- copied history, nudges by evidence, session-end sweep ----------
+def two_struggle_sessions(proj, copy=False):
+    """Session s1 struggles with a push; s2 is either a genuine second struggle or a copy of s1 (same tool ids)."""
+    t1 = Transcript(proj, "s1").bash("git push origin main", "rejected", ok=False).user("no, use ssh") \
+        .bash("git remote set-url origin git@x:a/b.git").bash("git push origin main")
+    t1.write()
+    if copy:
+        t2 = Transcript(proj, "s2")
+        t2.recs = list(t1.recs)  # resumed into a new file with the old history copied in
+    else:
+        t2 = Transcript(proj, "s2").bash("git push origin main", "rejected", ok=False).user("no, ssh again") \
+            .bash("git remote set-url origin git@x:a/b.git").bash("git push origin main")
+    t2.write()
+
+
+@pytest.mark.parametrize("copy,sessions", [(False, 2), (True, 1)])
+def test_copied_history_is_not_a_second_session(isolated, copy, sessions):
+    two_struggle_sessions(isolated / "repo", copy)
+    mine.mine()
+    c = next(c for c in mine.list_candidates(show_all=True) if c["kind"] == "struggle")
+    assert c["sessions"] == sessions
+
+
+def test_nudge_repeats_only_with_new_evidence(isolated):
+    proj = isolated / "repo"
+    two_struggle_sessions(proj)
+    mine.mine()
+    assert "flow miner" in mine.nudge()
+    assert mine.nudge() == ""                                   # reopening: nothing new, nothing repeated
+    Transcript(proj, "s3").bash("git push origin main", "rejected", ok=False).user("no, ssh") \
+        .bash("git remote set-url origin git@x:a/b.git").bash("git push origin main").write()
+    mine.mine()
+    assert "flow miner" in mine.nudge()                         # a third session is new evidence
+
+
+def test_session_end_also_mines_sessions_that_ended_without_the_hook(isolated, monkeypatch, capsys):
+    proj = isolated / "repo"
+    crashed = Transcript(proj, "crashed").bash("npm run build").bash("npx wrangler deploy").write()
+    current = Transcript(proj, "current").bash("npm run build").bash("npx wrangler deploy").write()
+    run_hook("session-end", {"transcript_path": str(current)}, monkeypatch, capsys)
+    assert {Path(k).name for k in mine._load("index.json", {})} == {crashed.name, current.name}

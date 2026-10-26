@@ -12,8 +12,8 @@ Measured on three real tasks (a push to a remote that was ahead, an Android app 
 
 ## How it works
 
-1. **Find.** After each session, claude-flow scans it locally (no model calls) for procedures you repeat and failures you had to talk Claude through.
-2. **Write.** At the start of a session, Claude is told about the strongest ones. When there's a natural pause, it drafts a flow from the evidence, tests it, and tells you what it saved.
+1. **Find.** When a session ends, claude-flow scans every transcript that changed, locally and with no model calls, for procedures you repeat and failures you had to talk Claude through. A session that ended without notice (a crash, a closed terminal) gets picked up the next time any session ends.
+2. **Write.** At the start of a session, Claude is told about procedures that have gained new evidence since it last heard about them (seen in more sessions, or corrected again). Reopening a session repeats nothing. When there's a natural pause, it drafts a flow from the evidence, tests it, and tells you what it saved.
 3. **Use.** Each session starts by telling Claude which flows exist for the project. When a task matches one, Claude runs it in a single call. That stays true after the context gets compacted.
 4. **Improve.** If a flow hits a failure it doesn't know, Claude fixes it. Claude then turns that fix into a checked change to the flow, so the next run handles it on its own.
 

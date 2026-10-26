@@ -1,5 +1,6 @@
 """Write synthetic Claude Code transcripts (the record shapes seen in real ~/.claude/projects files)."""
 import json
+import secrets
 from pathlib import Path
 
 from flowkit import transcripts
@@ -17,7 +18,7 @@ class Transcript:
 
     def tool(self, name, inp, result, ok=True):
         self.n += 1
-        tid = f"toolu_{self.n}"
+        tid = "toolu_" + secrets.token_hex(8)  # unique across files, like real ids
         ts = self._ts()
         self.recs.append({"type": "assistant", "timestamp": ts, "cwd": "/home/u/repo",
                           "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}})

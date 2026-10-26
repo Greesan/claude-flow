@@ -177,9 +177,9 @@ def transcript(path, sessions_cmds):
         n += 1
         ts = f"2026-10-01T00:00:{n:02d}Z"
         lines.append({"type": "assistant", "timestamp": ts, "cwd": "/home/u/repo", "message": {"content": [
-            {"type": "tool_use", "id": f"t{n}", "name": "Bash", "input": {"command": cmd}}]}})
+            {"type": "tool_use", "id": f"{path.stem}-t{n}", "name": "Bash", "input": {"command": cmd}}]}})
         lines.append({"type": "user", "timestamp": ts, "message": {"content": [
-            {"type": "tool_result", "tool_use_id": f"t{n}", "content": "ok" if ok else "Exit code 1\nerror",
+            {"type": "tool_result", "tool_use_id": f"{path.stem}-t{n}", "content": "ok" if ok else "Exit code 1\nerror",
              "is_error": not ok}]}})
         if said:
             lines.append({"type": "user", "timestamp": ts, "message": {"content": said}})
