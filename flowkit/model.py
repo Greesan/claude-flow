@@ -18,7 +18,8 @@ DEFAULT_SIDE = re.compile(r"\b(deploy|publish|push|release|delete|rm|drop|secret
 KEYS = {
     "run": {"type", "cmd", "script", "args", "cwd", "env", "env_passthrough", "secrets", "timeout", "effect",
             "outputs", "ok", "fail", "recover", "learned_from", "note", "check"},
-    "decide": {"type", "question", "options", "criteria", "branches", "check", "cwd", "jev", "learned_from", "note"},
+    "decide": {"type", "question", "options", "criteria", "branches", "check", "script", "args", "by", "cwd", "env",
+               "env_passthrough", "secrets", "timeout", "jev", "learned_from", "note"},
     "confirm": {"type", "say", "next", "learned_from", "note"},
     "human": {"type", "say", "next", "learned_from", "note"},
     "end": {"type", "say", "note"},
@@ -234,6 +235,14 @@ def validate(g, flow_dir=None):
                 errs.append(f"{k}: decide needs >= 2 options and one branch per option")
             if n.get("criteria") and set(n["criteria"]) != set(opts):
                 errs.append(f"{k}: criteria keys must equal options")
+            if n.get("check") and n.get("script"):
+                errs.append(f"{k}: a decide step takes a `check` command or a `script`, not both")
+            if n.get("by", "exit") not in ("exit", "output"):
+                errs.append(f"{k}: by must be `exit` (exit 0 = first option) or `output` (the check prints the option)")
+            if (n.get("check") or n.get("script")) and len(opts) > 2 and n.get("by") != "output":
+                errs.append(f"{k}: more than two options needs `by: output` (the check prints which option to take)")
+            if n.get("script") and flow_dir and not (Path(flow_dir) / "steps" / n["script"]).is_file():
+                errs.append(f"{k}: script steps/{n['script']} not found")
         elif t in ("confirm", "human"):
             if not n.get("say") or not n.get("next"):
                 errs.append(f"{k}: {t} node needs 'say' and 'next'")
@@ -270,7 +279,9 @@ def validate(g, flow_dir=None):
     def dfs(k):
         color[k] = 1
         n = nodes[k]
-        for t in [n[x] for x in ("ok", "next") if isinstance(n.get(x), str)] + list((n.get("branches") or {}).values()):
+        # a loop back through a `human` step (fix it, then check again) is fine: a person decides each pass
+        nxt = [] if n.get("type") == "human" else [n[x] for x in ("ok", "next") if isinstance(n.get(x), str)]
+        for t in nxt + list((n.get("branches") or {}).values()):
             if color.get(t) == 1:
                 errs.append(f"cycle on the success path via {k} -> {t}")
             elif t not in color:

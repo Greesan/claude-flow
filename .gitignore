@@ -11,3 +11,6 @@ logs/
 .venv/
 dist/
 *.egg-info/
+
+# Symlinks to your own flows in other projects (private, never committed)
+examples/local/

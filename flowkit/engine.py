@@ -245,10 +245,27 @@ def run(store, st):
                               f"into a verified patch, or resume --done to just retry")
         elif t == "decide":
             choice = None
-            if n.get("check"):
-                code, _ = run_check(store, flow, cur, n, st)
-                choice = n["options"][0] if code == 0 else n["options"][1]
-                log.append({"node": cur, "by": "check", "choice": choice})
+            if n.get("check") or n.get("script"):
+                probe = {k: n[k] for k in ("cwd", "env", "env_passthrough", "secrets", "script", "args") if k in n}
+                if n.get("check"):
+                    probe["cmd"] = n["check"]
+                probe["timeout"] = n.get("timeout") or 60
+                code, tail, outs = run_step(store, flow, cur, probe, st)
+                if code == "secret":
+                    return pause(store, st, "needs_human", {"type": "retry", "node": cur}, say=tail)
+                if n.get("by") == "output":  # the check prints which option to take (last non-empty line)
+                    said = next((ln.strip() for ln in reversed(tail.splitlines()) if ln.strip()), "")
+                    choice = said if said in n["options"] else None
+                else:
+                    choice = n["options"][0] if code == 0 else n["options"][1]
+                st["last_out"] = tail
+                if choice is not None:
+                    st["outputs"][cur] = {**outs, "choice": choice}
+                log.append({"node": cur, "by": "check", "choice": choice, "exit": code})
+                if choice is None:
+                    return pause(store, st, "needs_claude", {"type": "decide", "node": cur}, question=n["question"],
+                                 options=n["options"], output_tail=tail,
+                                 hint="the check did not print one of the options; read its output and choose")
             elif n.get("jev"):
                 did, c, conf = decide.ask(store, cur, n["question"], n.get("criteria") or {o: o for o in n["options"]},
                                           {"context": decide.clean_tail(st.get("last_out", ""))})

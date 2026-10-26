@@ -23,8 +23,9 @@ def to_mermaid(flow, stats=None, current=None, timing=None):
                 "human": n.get("say", ""), "decide": _t(n.get("question", "")), "end": n.get("say") or "end"}[t]
         extra = []
         if t == "decide":  # how the question gets answered: the diagnostic command, or a model
-            body += "<br/>" + ("check: " + _t(n["check"], 44) if n.get("check") else "decided by the decision model" if n.get("jev")
-                               else "decided by Claude")
+            how = ("check: " + _t(n["check"], 44) if n.get("check") else "script: " + n["script"] if n.get("script")
+                   else "decided by the decision model" if n.get("jev") else "decided by Claude")
+            body += "<br/>" + how + ("<br/><i>(prints the answer)</i>" if n.get("by") == "output" else "")
         if t == "run":
             tm = ((timing or {}).get("steps") or {}).get(k)
             if tm:
@@ -41,24 +42,31 @@ def to_mermaid(flow, stats=None, current=None, timing=None):
         if t == "run":
             L.append(f"  {k} -->|ok| {n['ok']}")
             f = n.get("fail")
+            rec = [r for r in n.get("recover") or [] if r.get("status") != "dropped"]
+            src = k
+            if rec:  # failure handling is a decision too: draw it as one
+                src = f"{k}__why"
+                L.append(f'  {k} -.->|fails| {src}{{"what failed?"}}')
+                for r in rec:
+                    good, bad = stats.get(r["id"], (0, 0))
+                    how = "regex" if r.get("match") else "model"
+                    L.append(f'  {src} -- "{r["id"]} · {how} · {r.get("status", "promoted")} {good}✓ {bad}✗" --> {r["to"]}')
+            edge = "-->|anything else|" if rec else "-.->|fails|"
             if isinstance(f, str) and f.startswith("human:"):
-                L.append(f'  {k} -.->|fail| {k}_fail(["{_t(f[6:])}"])')
-                L.append(f"  class {k}_fail humanfail")
+                L.append(f'  {src} {edge} {k}__human(["{_t(f[6:])}"])')
+                L.append(f"  class {k}__human humanfail")
             elif f:
-                L.append(f"  {k} -.->|fail: any other error| {f}")
-            for r in n.get("recover") or []:
-                if r.get("status") == "dropped":
-                    continue
-                good, bad = stats.get(r["id"], (0, 0))
-                how = "regex" if r.get("match") else "model"
-                L.append(f'  {k} -. "{r["id"]} ({how}, {r.get("status", "promoted")} {good}✓ {bad}✗): '
-                         f'{_t(r["when"], 34)}" .-> {r["to"]}')
+                L.append(f"  {src} {edge} {f}")
+            elif rec:
+                L.append(f'  {src} {edge} {k}__claude(["hand to Claude"])')
+                L.append(f"  class {k}__claude humanfail")
         elif t in ("confirm", "human"):
             L.append(f"  {k} --> {n['next']}")
         elif t == "decide":
             opts = n.get("options") or list(n.get("branches") or {})
             for i, (opt, tgt) in enumerate((n.get("branches") or {}).items()):
-                when = (" (check passes)" if opts and opt == opts[0] else " (check fails)") if n.get("check") else ""
+                when = ((" (check passes)" if opts and opt == opts[0] else " (check fails)")
+                        if n.get("check") and n.get("by", "exit") == "exit" else "")
                 L.append(f"  {k} -->|{_t(opt + when, 30)}| {tgt}")
     L += ["  classDef learned fill:#fff3cd,stroke:#b8860b,color:#1f2328",
           "  classDef promoted fill:#d4edda,stroke:#2e7d32,color:#1f2328",

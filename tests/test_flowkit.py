@@ -294,3 +294,48 @@ def test_learned_path_is_promoted_after_three_proven_fixes(isolated):
     assert entry["status"] == "promoted" and "gate" not in entry and s.recover_stats()[rid] == (3, 0)
     flag.unlink()
     assert start(s)["status"] == "done"                          # promoted: no gate any more
+
+
+# ---------- decisions ----------
+def picker(prints):
+    return {"start": "which", "nodes": {
+        "which": {"type": "decide", "question": "Which one?", "by": "output", "options": ["a", "b", "c"],
+                  "check": f'echo "note=n1" >> "$FLOW_OUTPUT"; echo thinking; echo {prints}',
+                  "branches": {"a": "done_a", "b": "done_b", "c": "done_b"}},
+        "done_a": {"type": "end", "say": "A {{ outputs.which.choice }} {{ outputs.which.note }}"},
+        "done_b": {"type": "end", "say": "B"}}}
+
+
+def test_decide_by_output_takes_the_printed_option_and_keeps_outputs():
+    assert start(make("p", picker("a")))["say"] == "A a n1"
+    assert start(make("q", picker("c")))["say"] == "B"
+
+
+def test_decide_by_output_hands_unexpected_answers_to_claude():
+    r = start(make("p", picker("banana")))
+    assert r["status"] == "needs_claude" and r["options"] == ["a", "b", "c"] and "banana" in r["output_tail"]
+
+
+def test_more_than_two_options_needs_by_output():
+    g = picker("a")
+    del g["nodes"]["which"]["by"]
+    assert any("needs `by: output`" in e for e in validate(g))
+
+
+def test_fix_and_recheck_loop_through_a_human_step_is_allowed():
+    g = {"start": "clean", "nodes": {
+        "clean": {"type": "decide", "question": "Clean?", "check": "true", "options": ["yes", "no"],
+                  "branches": {"yes": "done", "no": "fix"}},
+        "fix": {"type": "human", "say": "commit first", "next": "clean"},
+        "done": {"type": "end"}}}
+    assert validate(g) == []
+    g["nodes"]["fix"] = {"type": "run", "cmd": "true", "effect": "read", "ok": "clean"}   # no person in the loop
+    assert any("cycle on the success path" in e for e in validate(g))
+
+
+def test_chart_draws_failure_handling_as_a_diamond():
+    from flowkit.mermaid import to_mermaid
+    g = linear(effect="read")
+    g["nodes"]["a"]["recover"] = [{"id": "r1", "when": "it broke", "match": "x", "to": "done"}]
+    chart = to_mermaid(g)
+    assert 'a__why{"what failed?"}' in chart and "r1 · regex" in chart and "a__claude" in chart

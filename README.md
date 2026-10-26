@@ -111,7 +111,7 @@ nodes:
 
 **Steps** (`type`):
 - `run` runs a shell command (`cmd`) or a script in `steps/` (`script`).
-- `decide` branches on a `check` command: exit 0 takes the first option, anything else the second.
+- `decide` answers a question with a `check` command or a `script`: exit 0 takes the first option, anything else the second. With `by: output`, the last line it prints names the option, so it can choose among more than two.
 - `confirm` waits for your approval, `human` waits for you to do something, `end` finishes.
 
 **`effect`** is required on every `run` step and says how risky it is:
