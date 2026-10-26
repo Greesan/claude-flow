@@ -61,8 +61,8 @@ def _next_step(name, r):
 def session_start(p):
     flows, lines = list_flows(), []
     if flows:
-        lines.append("[flow] Saved flows for this project. Run them instead of doing these steps by hand "
-                     "(`flow run <name> -i key=value`; `flow list` for details):")
+        lines.append("[flow] Saved flows for this project. When a task matches one, run it (`flow run <name> -i key=value`) "
+                     "instead of doing the steps yourself; you don't need to ask first, risky steps stop for approval:")
         slow = []
         for s in flows[:6]:
             g, tm = s.load(), s.timing()

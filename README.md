@@ -1,12 +1,21 @@
 # claude-flow
 
-Saved procedures for Claude Code.
+Claude Code learns the procedures you keep walking it through, and runs them the same way every time.
 
-**Who it's for:** Claude Code users who keep walking the agent through the same multi-step procedures (a deploy, a release, an app build, a server restart) and keep correcting it along the way. You write the procedure down once as a **flow**. Claude then runs the flow instead of working the steps out turn by turn, and it does the same thing every time. You can read, chart and version each flow, and the risky steps wait for your approval. Claude is only brought in when a flow hits a failure it hasn't seen before.
+**Who it's for:** Claude Code users who keep taking the agent through the same multi-step procedures (a deploy, a release, an app build, a server restart) and keep correcting it along the way.
+
+**You don't write flows, and you don't tell Claude to use them.** claude-flow reads your past Claude Code sessions. Claude turns the procedures you keep repeating or correcting into **flows**: saved, versioned step-by-step procedures. From then on, Claude runs the matching flow whenever a task calls for it, instead of working the steps out again. Your part is approving the steps that change something shared. You can read, chart or edit any flow, but you don't have to.
 
 It runs locally and isn't a CI/CD system.
 
 Measured on three real tasks (a push to a remote that was ahead, an Android app build, and a two-service deploy), compared with Claude doing them by hand: about half the time to finish, 2 model calls instead of 4–8, and 1.2–1.6× lower token cost, with the same result.
+
+## How it works
+
+1. **Find.** After each session, claude-flow scans it locally (no model calls) for procedures you repeat and failures you had to talk Claude through.
+2. **Write.** At the start of a session, Claude is told about the strongest ones. When there's a natural pause, it drafts a flow from the evidence, tests it, and tells you what it saved.
+3. **Use.** Each session starts by telling Claude which flows exist for the project. When a task matches one, Claude runs it in a single call. That stays true after the context gets compacted.
+4. **Improve.** If a flow hits a failure it doesn't know, Claude fixes it. Claude then turns that fix into a checked change to the flow, so the next run handles it on its own.
 
 ## Install
 
@@ -18,29 +27,64 @@ uv tool install --editable .     # puts `flow` on your PATH
 flow hooks                       # prints the Claude Code hook settings to merge into ~/.claude/settings.json
 ```
 
-## Run a flow
+After that, there's nothing to do. Optionally, start from the example flow:
 
 ```bash
-flow import git-push-recovery examples/flows/git-push-recovery/flow.yaml --global   # install the example
-flow list                                   # flows for this project and your global ones, with inputs and average time
-flow run git-push-recovery                  # prints one JSON result
-flow run git-push-recovery -i remote=upstream
-flow resume git-push-recovery --run <id> --approve
-flow export git-push-recovery --out chart.mmd                                           # Mermaid flowchart
+flow import git-push-recovery examples/flows/git-push-recovery/flow.yaml --global
+```
+
+## How flows get written
+
+These are the commands Claude uses. You can run them too.
+
+```bash
+flow mine                        # scan your local session logs; no model calls, nothing leaves the machine
+flow candidates                  # procedures you repeat, and failures you had to talk Claude through
+flow draft <id> --as <name>      # the evidence and an outline for writing the flow
+flow usage                       # how often each flow ran, from the main session vs subagents
+```
+
+## How flows run
+
+```bash
+flow list                        # flows for this project and your global ones, with inputs and average time
+flow run <name> -i key=value     # prints one JSON result
+flow resume <name> --run <id> --approve
+flow export <name> --out chart.mmd                                                   # Mermaid flowchart
 ```
 
 A run ends `done`, or pauses with one of these:
 
-| Pause | Meaning | Continue with |
+| Pause | Meaning | What happens next |
 |---|---|---|
-| `needs_confirm` | a step that changes something shared is waiting for your OK | `--approve` (only after you say yes) |
-| `needs_human` | you need to do something first, e.g. log in somewhere | `--done` |
-| `needs_claude` | a failure no recovery path covers; Claude picks one or handles it | `--choose <id>` |
-| `failed` | no recovery path at all; Claude fixes it and can teach the flow (below) | `--done` to retry |
+| `needs_confirm` | a step that changes something shared is waiting for your OK | Claude asks you, and continues only after you say yes |
+| `needs_human` | you need to do something first, e.g. log in somewhere | you do it, then Claude continues |
+| `needs_claude` | a failure no recovery path covers | Claude picks a path or fixes it itself |
+| `failed` | no recovery path at all | Claude fixes it, then can teach the flow (below) |
 
-Slow flows (builds, deploys) should be started with Claude's background Bash, so the 2-minute tool timeout can't cut a step off.
+Claude starts slow flows (builds, deploys) in the background, so the 2-minute tool timeout can't cut a step off.
 
-## Write a flow
+## How flows improve
+
+When a run pauses on something new and Claude fixes it, Claude turns the fix into a change to the flow:
+
+```bash
+flow learn <flow> --run <id> --propose        # the failure plus the commands Claude ran, read from the session log
+flow learn <flow> --run <id> --patch p.json   # Claude's change to the flow, checked before it's added
+```
+
+**Each change is checked before it's added:**
+- It must point to the commands that justify it.
+- Every new step needs a `check` that passes right now.
+- The step that failed must succeed again.
+
+**After it's added:**
+- A new recovery path waits for your approval each time it runs, until it has worked 3 times. It's removed after 2 failures.
+- Learned steps that turn out never to be needed are removed automatically.
+
+## The flow format
+
+Claude writes these. This section is for when you want to read or adjust one.
 
 Flows live in `.claude/flows/<name>/` (one project) or `~/.claude/flows/<name>/` (every project):
 
@@ -102,40 +146,13 @@ nodes:
 
 **Timing.** Every step records how long it took. `flow list`, `flow show` and the chart labels give the average and p90 for each step and for a whole run.
 
-## Teach a flow from what Claude did
-
-When a run pauses on something new, let Claude fix it, then:
-
-```bash
-flow learn <flow> --run <id> --propose        # the failure plus the commands Claude ran, read from the session log
-flow learn <flow> --run <id> --patch p.json   # Claude's change to the flow, checked before it's added
-```
-
-**Each change is checked before it's added:**
-- It must point to the commands that justify it.
-- Every new step needs a `check` that passes right now.
-- The step that failed must succeed again.
-
-**After it's added:**
-- A new recovery path sits behind an approval step until it has worked 3 times. It's removed after 2 failures.
-- Learned steps that turn out never to be needed are removed automatically.
-
-## Find procedures worth saving
-
-```bash
-flow mine                        # reads your local Claude Code session logs; no model calls, nothing leaves the machine
-flow candidates                  # repeated command sequences, and failures you had to talk Claude through
-flow draft <id> --as <name>      # gives Claude the evidence to write the flow
-flow usage                       # how often each flow ran, from the main session vs subagents
-```
-
 ## Hooks
 
 `flow hooks` prints these. All run locally.
 
 | Hook | What it does |
 |---|---|
-| Session start | Tells Claude which flows exist and which runs are paused, so it uses them, including after context compaction |
+| Session start | Tells Claude which flows exist (so it uses them), which runs are paused, and which procedures you repeat still have no flow (so it writes them). Also fires after context compaction |
 | Before compaction | Saves what Claude did on paused runs, and updates the candidate list |
 | Session end | Updates the candidate list |
 | Before each Bash call | Blocks `flow resume … --approve` unless you approved after the flow asked. Plain bash; Python only starts for `--approve` |

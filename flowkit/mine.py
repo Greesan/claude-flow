@@ -416,8 +416,9 @@ def nudge():
     here = [c for c in cs if any(proj.replace("/", "-").endswith(p.lstrip("-")) or p.endswith(proj.replace("/", "-"))
                                  for p in c["projects"])] if proj else []
     pick = (here or cs)[:3]
-    return ("flow miner: " + str(len(cs)) + " repeated workflows could be automated (e.g. "
-            + "; ".join(f"{c['id']} {c['title'][:60]}" for c in pick) + "). See `flow candidates`.")
+    return ("flow miner: the user keeps repeating or correcting " + str(len(cs)) + " procedures that have no flow yet (e.g. "
+            + "; ".join(f"{c['id']} {c['title'][:60]}" for c in pick) + "). When there is a natural pause, turn one into a "
+            "flow yourself (`flow draft <id> --as <name>`, write it, test it), then tell the user what you saved.")
 
 
 def usage(flow=None):
