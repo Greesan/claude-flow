@@ -19,12 +19,14 @@ KEYS = {
     "run": {"type", "cmd", "script", "args", "cwd", "env", "env_passthrough", "secrets", "timeout", "effect",
             "outputs", "ok", "fail", "recover", "learned_from", "note", "check"},
     "decide": {"type", "question", "options", "criteria", "branches", "check", "script", "args", "by", "cwd", "env",
-               "env_passthrough", "secrets", "timeout", "jev", "learned_from", "note"},
+               "env_passthrough", "secrets", "timeout", "jev", "outputs", "learned_from", "note"},
     "confirm": {"type", "say", "next", "learned_from", "note"},
     "human": {"type", "say", "next", "learned_from", "note"},
     "end": {"type", "say", "note"},
 }
-TOP_KEYS = {"name", "version", "about", "inputs", "env", "env_passthrough", "secrets_from", "timeout", "start", "nodes", "script_hashes"}
+TOP_KEYS = {"name", "version", "about", "inputs", "outputs", "env", "env_passthrough", "secrets_from", "timeout", "start", "nodes", "script_hashes"}
+OUTPUT_KEYS = {"help", "regex"}
+INPUT_KEYS = {"type", "default", "required", "help", "values", "pattern"}
 RECOVER_KEYS = {"id", "when", "match", "to", "status", "gate", "cmds", "learned_at"}
 
 
@@ -125,6 +127,35 @@ def template_refs(node):
     return [m.group(1) for s in strs for m in TEMPLATE.finditer(s)]
 
 
+# ---------- outputs ----------
+def produces(n):
+    """The output keys a step promises: its declared `outputs`, plus `choice` for a decide step."""
+    return set(n.get("outputs") or {}) | ({"choice"} if n.get("type") == "decide" else set())
+
+
+def _output_errors(k, n):
+    errs = []
+    for o, spec in (n.get("outputs") or {}).items():
+        if not ID.match(o) or o == "choice":
+            errs.append(f"{k}: output '{o}': bad name")
+        if not isinstance(spec, dict) or set(spec) - OUTPUT_KEYS or not spec.get("help"):
+            errs.append(f"{k}: output '{o}' needs 'help' (and optionally 'regex'; without one the step writes "
+                        f"{o}=<value> to $FLOW_OUTPUT)")
+            continue
+        if "regex" in spec:
+            try:
+                re.compile(spec["regex"])
+            except (TypeError, re.error):
+                errs.append(f"{k}: output '{o}': bad regex")
+    return errs
+
+
+def flow_outputs(flow, step_outputs):
+    """The flow's declared results, {name: value or None when the path taken never produced it}."""
+    return {name: (step_outputs.get(spec["from"].split(".", 1)[0]) or {}).get(spec["from"].split(".", 1)[1])
+            for name, spec in (flow.get("outputs") or {}).items()}
+
+
 # ---------- graph helpers ----------
 def is_human_fail(v):
     return isinstance(v, str) and v.startswith("human:")
@@ -169,6 +200,10 @@ def validate(g, flow_dir=None):
             errs.append(f"input '{name}': type must be one of {sorted(INPUT_TYPES)}")
         elif s.get("type") == "enum" and not s.get("values"):
             errs.append(f"input '{name}': enum needs 'values'")
+        if isinstance(s, dict):
+            errs += [f"input '{name}': unknown key '{x}'" for x in sorted(set(s) - INPUT_KEYS)]
+            if not s.get("help"):
+                errs.append(f"input '{name}': add a 'help' line saying what it is")
     for name in g.get("secrets_from", {}) or {}:
         if name != "doppler":
             errs.append(f"secrets_from '{name}': only 'doppler' is supported")
@@ -207,11 +242,6 @@ def validate(g, flow_dir=None):
             for s in n.get("secrets") or []:
                 if not SECRET_NAME.match(s):
                     errs.append(f"{k}: secret name '{s}' must be UPPER_SNAKE")
-            for o, spec in (n.get("outputs") or {}).items():
-                try:
-                    re.compile(spec["regex"])
-                except (TypeError, KeyError, re.error):
-                    errs.append(f"{k}: output '{o}' needs a valid 'regex'")
             for r in n.get("recover") or []:
                 miss = {"id", "when", "to"} - set(r)
                 if miss:
@@ -246,6 +276,8 @@ def validate(g, flow_dir=None):
         elif t in ("confirm", "human"):
             if not n.get("say") or not n.get("next"):
                 errs.append(f"{k}: {t} node needs 'say' and 'next'")
+        if t in ("run", "decide"):
+            errs += _output_errors(k, n)
         for kind, tgt in edges(n):
             if tgt not in nodes:
                 errs.append(f"{k} -{kind}-> {tgt}: no such node")
@@ -255,12 +287,23 @@ def validate(g, flow_dir=None):
                 errs.append(f"{k}: template '{ref}' names an undeclared input")
             elif parts[0] == "outputs" and (len(parts) != 3 or parts[1] not in nodes):
                 errs.append(f"{k}: template '{ref}' must be outputs.<node>.<key>")
+            elif parts[0] == "outputs" and parts[2] not in produces(nodes[parts[1]]):
+                errs.append(f"{k}: template '{ref}': step '{parts[1]}' does not declare output '{parts[2]}'")
             elif parts[0] == "run" and (len(parts) != 2 or parts[1] not in ("id", "dir", "flow")):
                 errs.append(f"{k}: template '{ref}' must be run.id, run.dir or run.flow")
             elif parts[0] not in ("inputs", "outputs", "run", "last_output"):
                 errs.append(f"{k}: unknown template '{ref}'")
         if t != "end" and not edges(n) and not (t == "run" and is_human_fail(n.get("fail"))):
             errs.append(f"{k}: no way out")
+    for name, spec in (g.get("outputs") or {}).items():
+        src = spec.get("from", "") if isinstance(spec, dict) else ""
+        node, _, key = src.partition(".")
+        if not ID.match(name):
+            errs.append(f"output '{name}': bad name")
+        if not isinstance(spec, dict) or set(spec) - {"from", "help"} or not spec.get("help"):
+            errs.append(f"output '{name}': needs 'from: <step>.<key>' and 'help'")
+        elif node not in nodes or key not in produces(nodes[node]):
+            errs.append(f"output '{name}': from '{src}' is not an output a step declares")
     if errs:
         return errs
 

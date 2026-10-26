@@ -200,7 +200,12 @@ def test_miner_finds_struggles_and_sequences_and_marks_coverage():
     cs = mine.list_candidates()
     struggle = next(c for c in cs if c["kind"] == "struggle")
     assert struggle["occurrences"] == 2 and struggle["title"].startswith("git push")
-    assert any(c["kind"] == "sequence" and "npx wrangler deploy" in c["title"] for c in cs)
+    assert set(struggle["reasons"]) == {"intervention", "time_saved"} and struggle["target"] == "new flow"
+    assert not any(c["kind"] == "sequence" for c in cs)                # only 2 state-changing steps: a pattern
+    assert any(c["kind"] == "sequence" and c["category"] == "pattern" and "npx wrangler deploy" in c["title"]
+               for c in mine.list_candidates(show_all=True))
+    table = mine.table(mine.list_candidates(show_all=True))
+    assert "| id | reason |" in table and "Patterns" in table and struggle["id"] in table
     full = mine.get_candidate(struggle["id"])
     assert "no, use ssh not https" in full["evidence"][0]["corrections"][0]
     assert mine.mine()["parsed"] == 0                                 # incremental: nothing changed

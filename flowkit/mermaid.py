@@ -26,6 +26,8 @@ def to_mermaid(flow, stats=None, current=None, timing=None):
             how = ("check: " + _t(n["check"], 44) if n.get("check") else "script: " + n["script"] if n.get("script")
                    else "decided by the decision model" if n.get("jev") else "decided by Claude")
             body += "<br/>" + how + ("<br/><i>(prints the answer)</i>" if n.get("by") == "output" else "")
+        if t in ("run", "decide") and n.get("outputs"):
+            extra.append("reports: " + ", ".join(n["outputs"]))
         if t == "run":
             tm = ((timing or {}).get("steps") or {}).get(k)
             if tm:
@@ -36,7 +38,7 @@ def to_mermaid(flow, stats=None, current=None, timing=None):
                 extra.append("secrets: " + ", ".join(n["secrets"]))
             if n.get("timeout"):
                 extra.append(f"timeout {n['timeout']}s")
-        L.append(f'  {k}{o}{k}<br/>{body if t == "decide" else _t(body)}{"<br/><i>" + _t("; ".join(extra), 48) + "</i>" if extra else ""}{c}')
+        L.append(f'  {k}{o}{k}<br/>{body if t == "decide" else _t(body)}{"<br/><i>" + _t("; ".join(extra), 60) + "</i>" if extra else ""}{c}')
     for k, n in nodes.items():
         t = n.get("type", "run")
         if t == "run":

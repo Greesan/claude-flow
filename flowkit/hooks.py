@@ -81,7 +81,7 @@ def session_start(p):
                      f"so the 2-minute tool timeout cannot cut a step off.")
     if flows:
         lines.append("[flow] Subagents don't see this list: when delegating, tell them which flow to run.")
-    n = mine.nudge() if p.get("source", "startup") == "startup" else ""
+    n, n_cands = mine.nudge() if p.get("source", "startup") == "startup" else ("", 0)
     if n:
         lines.append(f"[{n}")
     if not lines:
@@ -89,7 +89,7 @@ def session_start(p):
     # Claude gets the full text as context; the user gets one visible line saying it happened.
     seen = [f"{len(flows)} saved flow{'s' * (len(flows) != 1)}"] if flows else []
     seen += [f"{len(live)} run{'s' * (len(live) != 1)} in progress"] if live else []
-    seen += [f"{n.count(' extra steps')} procedure{'s' * (n.count(' extra steps') != 1)} worth saving"] if n else []
+    seen += [f"{n_cands} procedure{'s' * (n_cands != 1)} worth saving"] if n else []
     print(json.dumps({"systemMessage": "flow: " + " · ".join(seen),
                       "hookSpecificOutput": {"hookEventName": "SessionStart",
                                              "additionalContext": "\n".join(lines[:MAX_LINES])}}))

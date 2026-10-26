@@ -176,13 +176,17 @@ def find_struggles(cmds, human):
         k = acts[0]
         seen.add(k)
         j = next((j for j in range(i + 1, len(cmds)) if k in cmds[j]["keys"] and cmds[j]["status"] == "ok"), None)
+        how = "retried" if j is not None else None
+        if j is None:
+            j = _followed_through(cmds, i, typed)
+            how = "followed_through" if j is not None else None
         span = cmds[i:(j + 1 if j is not None else len(cmds))]
         attempts = [x for x in span if k in x["keys"]]
         between = [x for x in span if k not in x["keys"] and not is_noise(x)]
         t0, t1 = c["ts"], (cmds[j]["ts"] if j is not None else None)
         said = [h for h in typed if t0 and h["ts"] > t0 and (t1 is None or h["ts"] < t1)]
         out.append({
-            "key": k, "first_fail_index": i, "resolved": j is not None, "attempts": len(attempts),
+            "key": k, "first_fail_index": i, "resolved": j is not None, "resolved_how": how, "attempts": len(attempts),
             "fails": sum(1 for x in attempts if x["status"] == "fail"),
             "calls_until_success": len(span) - 1 if j is not None else None,
             "fix_steps": list(dict.fromkeys(a for x in between for a in action_keys(x)))[:6],
@@ -196,6 +200,22 @@ def find_struggles(cmds, human):
             "window": [{k2: x[k2] for k2 in ("cmd", "cwd", "status")} for x in span if not is_noise(x)][:12],
         })
     return out
+
+
+def _followed_through(cmds, i, typed, window=8):
+    """Index of the end of the first two back-to-back successful action calls after a failure, when no correction was
+    typed between the failure and them: the failing step was not retried, but what Claude did instead worked (e.g. a
+    failed `git pull --rebase` finished with `git rebase --continue`). None if that never happened."""
+    acts = [j for j in range(i + 1, min(len(cmds), i + 1 + window)) if not is_noise(cmds[j]) and action_keys(cmds[j])]
+    for a, b in zip(acts, acts[1:]):
+        if cmds[a]["status"] != "ok":
+            continue
+        if cmds[b]["status"] == "ok":
+            t0, t1 = cmds[i]["ts"], cmds[b]["ts"]
+            if not any(h.get("correction_hint") and t0 and t1 and t0 < h["ts"] < t1 for h in typed):
+                return b
+            return None
+    return None
 
 
 def collapse_with_entries(cmds):
@@ -299,6 +319,7 @@ def candidates(sessions):
                     "calls_lost": sum(g["calls_until_success"] or 0 for g in gs if g["resolved"]),
                     "time_lost_s": sum(g.get("elapsed_s") or 0 for g in gs if g["resolved"]),
                     "resolved": sum(g["resolved"] for g in gs), "covered_by": covered({key, *fix}),
+                    "resolved_sessions": len({s["parent"] or s["session"] for s, g in items if g["resolved"]}),
                     "overlap": overlap({key, *fix}),
                     "evidence": [{"session": s["session"][:8], "project": s["project"], "attempts": g["attempts"],
                                   "resolved": g["resolved"], "corrections": g["corrections"], "looked_at": g["looked_at"],
@@ -316,7 +337,48 @@ def candidates(sessions):
                     "steps": [r["step"]], "score": r["run"], "occurrences": r["run"], "sessions": 1,
                     "projects": [r["project"]], "covered_by": covered(set(r["step"].split(" + "))),
                     "overlap": overlap(set(r["step"].split(" + "))), "evidence": [r]})
-    return sorted(out, key=lambda c: -c["score"])
+    for c in out:
+        c["reasons"], c["why"] = _reasons(c)
+        c["target"] = _target(c, fk)
+        c["category"] = "candidate" if c["reasons"] and not c["covered_by"] else "pattern"
+    return sorted(out, key=lambda c: (c["category"] != "candidate", -c["score"]))
+
+
+# A procedure is a candidate (worth a flow) for one or both of these reasons; everything else the miner sees is a
+# pattern, listed with `flow candidates --all` but never pushed.
+REASONS = {
+    "intervention": "the user had to step in, and the fix is known: the failing step was corrected by the user, then "
+                    "fixed (it later succeeded, or what Claude did next worked), and the fix took 2+ extra calls",
+    "time_saved": "the same work recurs across sessions: a fix that worked in 2+ sessions and took 2+ extra calls each "
+                  "time, or the same 3+ state-changing steps succeeding in 2+ sessions; one flow call replaces it",
+}
+
+
+def _reasons(c):
+    """([reason, ...], {reason: one line of evidence})."""
+    why = {}
+    if c["kind"] == "struggle":
+        resolved = c.get("resolved", 0)
+        if c.get("corrected", 0) > 0 and resolved > 0 and c.get("calls_lost", 0) >= 2:
+            why["intervention"] = f"you stepped in {c['corrected']}x; fixed in {c['calls_lost']} extra calls"
+        if c.get("resolved_sessions", 0) >= 2 and resolved and c.get("calls_lost", 0) / resolved >= 2:
+            why["time_saved"] = (f"same fix in {c['resolved_sessions']} sessions, "
+                                 f"~{c['calls_lost'] / resolved:.0f} extra calls each")
+    elif c["kind"] == "sequence":
+        acting = [st for st in c["steps"] if any(not is_diagnostic(k) for k in st.split(" + "))]
+        ok_sessions = {e["session"] for e in c["evidence"] if all(x["status"] == "ok" for x in e["steps"])}
+        if len(acting) >= 3 and len(ok_sessions) >= 2:
+            why["time_saved"] = f"{len(acting)} state-changing steps, done in {c['sessions']} sessions"
+    return list(why), why
+
+
+def _target(c, fk):
+    """Where the fix belongs: a recovery path on the flow that already runs the failing step, or a new flow."""
+    if c["kind"] == "struggle":
+        owner = next((name for name, keys in fk.items() if c["steps"][0] in keys), None)
+        if owner:
+            return f"recovery path on {owner}"
+    return "new flow"
 
 
 # ------------------------------------------------------------- store + api
@@ -376,17 +438,49 @@ def mine(paths=None):
     for c in cands:
         c["status"] = status.get(c["id"], {}).get("status", "new")
     _atomic_write(MINE / "candidates.json", json.dumps({"ts": time.time(), "sessions": len(sessions), "candidates": cands}))
-    fresh = [c for c in cands if c["status"] == "new" and not c["covered_by"]]
-    return {"status": "ok", "parsed": parsed, "sessions": len(sessions), "candidates": len(cands),
-            "new_uncovered": len(fresh), "top": [{k: c[k] for k in ("id", "kind", "title", "score")} for c in fresh[:5]]}
+    fresh = [c for c in cands if c["status"] == "new" and c["category"] == "candidate"]
+    return {"status": "ok", "parsed": parsed, "sessions": len(sessions),
+            "candidates": sum(c["category"] == "candidate" for c in cands),
+            "patterns": sum(c["category"] == "pattern" for c in cands), "new_candidates": len(fresh),
+            "top": [{k: c[k] for k in ("id", "reasons", "target", "title")} for c in fresh[:5]]}
 
 
-def list_candidates(show_all=False, limit=15):
+ROW = ("id", "category", "reasons", "why", "target", "kind", "title", "occurrences", "sessions", "projects",
+       "covered_by", "status")
+
+
+def list_candidates(show_all=False, limit=None):
+    """Open candidates; with show_all, every candidate (any status) and the patterns too."""
     data = _load("candidates.json", {"candidates": []})
-    cs = data["candidates"] if show_all else [c for c in data["candidates"] if c["status"] in ("new", "drafting")
-                                              and not c["covered_by"]]
-    return [{k: c[k] for k in ("id", "kind", "title", "score", "occurrences", "sessions", "projects", "covered_by", "status")}
-            for c in cs[:limit]]
+    cs = data["candidates"] if show_all else [c for c in data["candidates"] if c.get("category") == "candidate"
+                                              and c["status"] in ("new", "drafting")]
+    return [{k: c.get(k) for k in ROW} for c in cs[:limit]]
+
+
+def _cell(text, n=70):
+    t = " ".join(str(text).split()).replace("|", "/")
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
+def table(rows):
+    """Markdown tables: candidates (with their reasons), then patterns if any were asked for."""
+    out = []
+    cands = [r for r in rows if r["category"] == "candidate"]
+    pats = [r for r in rows if r["category"] == "pattern"]
+    if cands:
+        out += ["| id | reason | evidence | fix goes to | procedure | sessions | status |",
+                "|---|---|---|---|---|---|---|"]
+        out += [f"| {r['id']} | {', '.join(r['reasons'])} | {_cell('; '.join(r['why'].values()), 60)} | {r['target']} | "
+                f"{_cell(r['title'])} | {r['sessions']} | {r['status']} |" for r in cands]
+    else:
+        out.append("No candidates: nothing yet needed you to step in or recurs enough to be worth a flow.")
+    if pats:
+        out += ["", "Patterns (seen, but no reason to make a flow yet):", "",
+                "| id | kind | procedure | seen | sessions | covered by |", "|---|---|---|---|---|---|"]
+        out += [f"| {r['id']} | {r['kind']} | {_cell(r['title'])} | {r['occurrences']}x | {r['sessions']} | "
+                f"{r['covered_by'] or ''} |" for r in pats]
+    out += ["", "Reasons: " + "; ".join(f"**{k}** = {v}" for k, v in REASONS.items())]
+    return "\n".join(out) + "\n"
 
 
 def get_candidate(cid):
@@ -405,7 +499,9 @@ def set_status(cid, status, note=""):
 
 def draft_brief(c, name):
     """What Claude needs to write the flow: evidence, a skeleton, and the rules. Writes nothing."""
-    skeleton = {"about": f"<one line: what this automates> (mined: {c['title']})", "inputs": {},
+    skeleton = {"about": f"<one line: what this automates> (mined: {c['title']})",
+                "inputs": {"<name>": {"type": "string", "help": "<what it is>", "default": "<optional>"}},
+                "outputs": {"<name>": {"from": "<step>.<key>", "help": "<what the caller gets back>"}},
                 "start": "step1", "nodes": {}}
     steps = c["steps"]
     for i, st in enumerate(steps, 1):
@@ -414,8 +510,8 @@ def draft_brief(c, name):
                                   "check": "<command that exits 0 when this step's effect is in place>",
                                   "ok": f"step{i + 1}" if i < len(steps) else "done"}
     skeleton["nodes"]["done"] = {"type": "end", "say": "<what to report>"}
-    return {"status": "draft", "candidate": {k: c[k] for k in ("id", "kind", "title", "steps", "occurrences", "sessions",
-                                                                  "projects", "covered_by")},
+    return {"status": "draft", "candidate": {k: c.get(k) for k in ("id", "kind", "reasons", "why", "target", "title", "steps",
+                                                                      "occurrences", "sessions", "projects", "covered_by")},
             "evidence": c["evidence"], "skeleton": skeleton,
             "rules": ["Model the intent, not one transcript: the evidence shows several attempts; keep the path that worked.",
                       "Failed steps in the evidence become recovery paths (with a `match` regex from the error) or "
@@ -423,30 +519,23 @@ def draft_brief(c, name):
                       "Corrections from the user in the evidence are rules: encode them (e.g. a confirm, a pre-check).",
                       "Steps that change shared things (deploy, push, restart) need effect: once behind a confirm, or "
                       "effect: idempotent when repeating them is harmless.",
-                      "Use {{ inputs.x }} for anything that varies; give every state-changing step a `check`."],
+                      "Use {{ inputs.x }} for anything that varies; give every state-changing step a `check`.",
+                      "Declare what each step reports under its `outputs` (with `help`), and the flow's results under "
+                      "top-level `outputs` (from: <step>.<key>); templates may only use declared outputs.",
+                      "If the candidate's target is a recovery path on an existing flow, add it there "
+                      "(`flow recover add`) instead of writing a new flow."],
             "next": [f"write the YAML, then: flow import {name} <file.yaml> -m 'mined from candidate {c['id']}'",
                      f"flow validate {name}; flow export {name}; then test it on a real case",
                      f"flow candidate done {c['id']}   (or: flow candidate dismiss {c['id']})"]}
 
 
 def worth_mentioning(c):
-    """Only procedures that needed the user, have a known fix, and cost real work, so a flow clearly saves time:
-      - the user stepped in: a real correction while Claude was stuck
-      - there is a clear fix: the failing step succeeded in the end, so the fix is in the transcript
-      - it cost work: the fix took at least a fix step and a retry (2+ calls a single flow call would replace)
-    Repeated sequences and loops without intervention are listed by `flow candidates` but never pushed."""
-    return (c["status"] == "new" and not c["covered_by"] and c["kind"] == "struggle" and c.get("corrected", 0) > 0
-            and c.get("resolved", 0) > 0 and c.get("calls_lost", 0) >= 2)
+    """New candidates only (see REASONS); patterns are listed by `flow candidates --all` but never pushed."""
+    return c["status"] == "new" and c.get("category") == "candidate"
 
 
 def _evidence(c):
     return {"sessions": c["sessions"], "occurrences": c["occurrences"], "corrected": c.get("corrected", 0)}
-
-
-def _cost(c):
-    mins = (c.get("time_lost_s") or 0) / 60
-    took = f"~{mins:.0f} min" if mins >= 1 else f"{c.get('time_lost_s') or 0}s"
-    return f"you stepped in {c['corrected']}x; it took {c['calls_lost']} extra steps, {took}"
 
 
 def _has_new_evidence(c, shown):
@@ -464,18 +553,19 @@ def nudge():
     shown = _load("nudged.json", {})
     cs = [c for c in data["candidates"] if worth_mentioning(c) and _has_new_evidence(c, shown)]
     if not cs:
-        return ""
+        return "", 0
     proj = os.environ.get("CLAUDE_PROJECT_DIR", "")
     here = [c for c in cs if any(proj.replace("/", "-").endswith(p.lstrip("-")) or p.endswith(proj.replace("/", "-"))
                                  for p in c["projects"])] if proj else []
-    pick = sorted(here or cs, key=lambda c: -(c.get("time_lost_s") or 0))
+    pick = sorted(here or cs, key=lambda c: (-len(c["reasons"]), -(c.get("time_lost_s") or 0)))
     shown.update({c["id"]: _evidence(c) for c in pick})
     MINE.mkdir(parents=True, exist_ok=True)
     _atomic_write(MINE / "nudged.json", json.dumps(shown))
-    listed = "; ".join(f"{c['id']} {c['title'][:60]} ({_cost(c)})" for c in pick)
-    return ("flow miner: these procedures needed the user to step in and have a clear fix, but no flow yet: " + listed
-            + ". When there is a natural pause, turn them into flows yourself (`flow draft <id> --as <name>`, write it, "
-            "test it), then tell the user what you saved.")
+    listed = "; ".join(f"{c['id']} {c['title'][:60]} [{', '.join(c['reasons'])}: {'; '.join(c['why'].values())}; "
+                       f"fix goes to: {c['target']}]" for c in pick)
+    return ("flow miner: procedures worth a flow, with no flow yet: " + listed
+            + ". When there is a natural pause, write them yourself (`flow draft <id> --as <name>`, or add the recovery "
+            "path to the named flow), test them, then tell the user what you saved.", len(pick))
 
 
 def usage(flow=None):

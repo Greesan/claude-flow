@@ -12,7 +12,8 @@ Running
 
 Finding flows to automate (local, no model calls)
   flow mine [--file transcript.jsonl ...]  parse new/changed session transcripts, rebuild candidates
-  flow candidates [--all]                  flow candidate show|dismiss|done <id>
+  flow candidates [--all] [--json]         table of candidates and why; --all adds patterns
+  flow candidate show|dismiss|done <id>
   flow usage [<flow>]                      how often each flow ran (main agent vs subagents) and how runs ended
   flow draft <id> --as <flow>              evidence + skeleton for Claude to write the flow
   flow hook session-start | pre-compact | session-end | approve-guard   (Claude Code hooks)   flow hooks (print config)
@@ -60,6 +61,20 @@ def out(d):
     if isinstance(d, dict) and d.get("status") in BAD:
         EXIT = 1
     print(json.dumps(d, default=str))
+
+
+def signature(g):
+    """What a flow takes and gives back, as tables (comment lines, so the YAML below still parses)."""
+    rows = ["# Inputs", "# | name | type | default | meaning |", "# |---|---|---|---|"]
+    for k, v in (g.get("inputs") or {}).items():
+        t = v.get("type", "string") + (f" ({' / '.join(map(str, v['values']))})" if v.get("values") else "")
+        d = v.get("default", "required" if v.get("required", True) else "")
+        rows.append(f"# | {k} | {t} | {d} | {v.get('help', '')} |")
+    rows += ["#", "# Outputs (in the result's `outputs` when the run ends)", "# | name | from | meaning |", "# |---|---|---|"]
+    rows += [f"# | {k} | {v.get('from')} | {v.get('help', '')} |" for k, v in (g.get("outputs") or {}).items()]
+    ends = [k for k, n in g["nodes"].items() if n.get("type") == "end"]
+    rows += ["#", f"# Ends: {', '.join(ends)} (the result's `ended` says which)"]
+    return "\n".join(rows) + "\n"
 
 
 def _store(name):
@@ -117,7 +132,8 @@ def main(argv):
     if cmd == "usage":
         return out(mine.usage(rest[0] if rest else None))
     if cmd == "candidates":
-        return out({"candidates": mine.list_candidates("--all" in rest)})
+        rows = mine.list_candidates("--all" in rest)
+        return out({"candidates": rows}) if "--json" in rest else sys.stdout.write(mine.table(rows))
     if cmd == "candidate":
         if len(rest) < 2 or rest[0] not in ("show", "dismiss", "done"):
             raise FlowError("flow candidate show|dismiss|done <id>")
@@ -140,7 +156,8 @@ def main(argv):
         return out(mine.draft_brief(c, a.name))
     if cmd == "list":
         return out({"flows": [{"name": s.name, "version": s.head_version(), "about": s.load().get("about", ""),
-                               "inputs": list((s.load().get("inputs") or {})), "timing": s.timing(), "where": str(s.dir)}
+                               "inputs": list((s.load().get("inputs") or {})),
+                               "outputs": list((s.load().get("outputs") or {})), "timing": s.timing(), "where": str(s.dir)}
                               for s in list_flows()]})
 
     ap = argparse.ArgumentParser(prog=f"flow {cmd}")
@@ -237,7 +254,7 @@ def main(argv):
         s = _store(a.flow)
         g = s.load(a.version)
         if cmd == "show":
-            sys.stdout.write(dump_yaml(g))
+            sys.stdout.write(signature(g) + "\n" + dump_yaml(g))
             tm = s.timing()
             if tm:
                 sys.stdout.write(f"# timing here: run avg {tm['mean']}s, p90 {tm['p90']}s over {tm['runs']} runs; per step: "

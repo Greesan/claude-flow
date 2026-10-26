@@ -232,23 +232,45 @@ def test_miner_counts_subagents_and_flow_usage(isolated):
     u = mine.usage()["usage"]
     assert u["apk-build"]["by_subagent"] == 2 and u["apk-build"]["statuses"] == {"done": 2}
     assert u["git-push-recovery"]["by_main"] == 2 and u["git-push-recovery"]["sessions"] == 2
-    seq = next(c for c in mine.list_candidates() if c["kind"] == "sequence")
+    seq = next(c for c in mine.list_candidates(show_all=True) if c["kind"] == "sequence")
     assert "flow" not in seq["title"] and seq["sessions"] == 2
     assert not mine.worth_mentioning(mine.get_candidate(seq["id"]))   # repeated, but nobody had to step in
 
 
-@pytest.mark.parametrize("change,mentioned", [
-    ({}, True),
-    ({"corrected": 0}, False),        # nobody stepped in
-    ({"resolved": 0}, False),         # never fixed: no clear fix to save
-    ({"calls_lost": 1}, False),       # a plain retry: a flow would not save anything
-    ({"kind": "sequence"}, False),    # repetition alone is not pushed
-    ({"covered_by": "x"}, False),
+@pytest.mark.parametrize("change,reasons", [
+    ({}, ["intervention"]),
+    ({"corrected": 0}, []),                                       # nobody stepped in, and it happened once
+    ({"resolved": 0}, []),                                        # never fixed: no clear fix to save
+    ({"calls_lost": 1}, []),                                      # a plain retry: a flow would not save anything
+    ({"corrected": 0, "resolved": 2, "resolved_sessions": 2, "calls_lost": 4}, ["time_saved"]),   # same fix, 2 sessions
+    ({"resolved": 2, "resolved_sessions": 2, "calls_lost": 4}, ["intervention", "time_saved"]),
 ])
-def test_mention_rule_needs_intervention_a_clear_fix_and_real_cost(change, mentioned):
-    c = {"status": "new", "covered_by": None, "kind": "struggle", "sessions": 1, "corrected": 1, "resolved": 1,
-         "calls_lost": 2}
-    assert mine.worth_mentioning({**c, **change}) is mentioned
+def test_candidate_reasons(change, reasons):
+    c = {"kind": "struggle", "corrected": 1, "resolved": 1, "resolved_sessions": 1, "calls_lost": 2}
+    assert mine._reasons({**c, **change})[0] == reasons
+
+
+def seq(steps, sessions):
+    return {"kind": "sequence", "steps": steps, "sessions": len(sessions),
+            "evidence": [{"session": s, "steps": [{"status": "ok"}] * len(steps)} for s in sessions]}
+
+
+@pytest.mark.parametrize("c,reasons", [
+    (seq(["npm run build", "npx wrangler deploy", "git push"], ["s1", "s2"]), ["time_saved"]),
+    (seq(["npm run build", "npx wrangler deploy"], ["s1", "s2"]), []),            # too short to be worth a flow
+    (seq(["npm run build", "npx wrangler deploy", "git push"], ["s1"]), []),      # one session: not recurring
+])
+def test_repeated_work_is_a_candidate_only_when_long_and_recurring(c, reasons):
+    assert mine._reasons(c)[0] == reasons
+
+
+def test_a_failure_counts_as_fixed_when_what_claude_did_next_worked(isolated):
+    Transcript(isolated / "repo", "s1").bash("git pull --rebase origin main", "CONFLICT", ok=False) \
+        .bash("git add a.txt").bash("git rebase --continue").write()
+    mine.mine()
+    c = next(c for c in mine.list_candidates(show_all=True) if c["kind"] == "struggle")
+    full = mine.get_candidate(c["id"])
+    assert full["resolved"] == 1 and full["calls_lost"] == 2
 
 
 def test_timing_marks_slow_flows_from_measured_runs(monkeypatch, capsys):
@@ -323,12 +345,12 @@ def test_nudge_repeats_only_with_new_evidence(isolated):
     proj = isolated / "repo"
     two_struggle_sessions(proj)
     mine.mine()
-    assert "flow miner" in mine.nudge()
-    assert mine.nudge() == ""                                   # reopening: nothing new, nothing repeated
+    assert "flow miner" in mine.nudge()[0]
+    assert mine.nudge() == ("", 0)                                   # reopening: nothing new, nothing repeated
     Transcript(proj, "s3").bash("git push origin main", "rejected", ok=False).user("no, ssh") \
         .bash("git remote set-url origin git@x:a/b.git").bash("git push origin main").write()
     mine.mine()
-    assert "flow miner" in mine.nudge()                         # a third session is new evidence
+    assert "flow miner" in mine.nudge()[0]                      # a third session is new evidence
 
 
 def test_session_end_also_mines_sessions_that_ended_without_the_hook(isolated, monkeypatch, capsys):

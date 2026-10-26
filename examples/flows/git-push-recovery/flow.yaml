@@ -6,6 +6,10 @@ inputs:
     default: origin
     pattern: '[A-Za-z0-9._-]+'
     help: remote to push to
+outputs:
+  ssh_url:
+    from: set_ssh.url
+    help: the remote's new SSH URL, when the run switched it from HTTPS (else null)
 env:
   GIT_SSH_COMMAND: ssh -o BatchMode=yes -o ConnectTimeout=10
 start: push
@@ -63,6 +67,9 @@ nodes:
     - '{{ inputs.remote }}'
     effect: once
     ok: push
+    outputs:
+      url:
+        help: the remote's new SSH URL
   wait_retry:
     type: run
     cmd: sleep 5

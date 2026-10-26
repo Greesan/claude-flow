@@ -39,10 +39,19 @@ These are the commands Claude uses. You can run them too.
 
 ```bash
 flow mine                        # scan your local session logs; no model calls, nothing leaves the machine
-flow candidates                  # procedures you repeat, and failures you had to talk Claude through
+flow candidates                  # a table of procedures worth a flow, and why (--all adds patterns)
 flow draft <id> --as <name>      # the evidence and an outline for writing the flow
 flow usage                       # how often each flow ran, from the main session vs subagents
 ```
+
+A procedure becomes a **candidate** for one or both reasons:
+
+| Reason | What the miner saw |
+|---|---|
+| `intervention` | You had to correct Claude on a failing step, the fix worked (the step later succeeded, or what Claude did next worked), and it took 2+ extra calls |
+| `time_saved` | The same fix worked in 2+ sessions at 2+ extra calls each time, or the same 3+ state-changing steps succeeded in 2+ sessions |
+
+Each candidate also says where the fix goes: a recovery path on the flow that already runs the failing step, or a new flow. Everything else the miner sees is a **pattern**: listed with `--all`, never brought up.
 
 ## How flows run
 
@@ -53,7 +62,7 @@ flow resume <name> --run <id> --approve
 flow export <name> --out chart.mmd                                                   # Mermaid flowchart
 ```
 
-A run ends `done`, or pauses with one of these:
+A finished run returns the flow's declared `outputs` and which `end` step it reached (`ended`). Otherwise it pauses with one of these:
 
 | Pause | Meaning | What happens next |
 |---|---|---|
@@ -91,7 +100,9 @@ Flows live in `.claude/flows/<name>/` (one project) or `~/.claude/flows/<name>/`
 ```yaml
 about: Push, recovering from the usual failures.
 inputs:
-  remote: {type: string, default: origin}
+  remote: {type: string, default: origin, help: git remote to push to}
+outputs:
+  ssh_url: {from: set_ssh.url, help: the remote's new SSH URL, when the run switched it}
 start: push
 nodes:
   push:
@@ -108,6 +119,12 @@ nodes:
   pull_rebase: {type: run, cmd: "git pull --rebase {{ inputs.remote }}", effect: idempotent, ok: push}
   done: {type: end, say: "Pushed. {{ last_output }}"}
 ```
+
+**Inputs and outputs** are the flow's contract, and `flow show` prints them as tables.
+- Every input has a `type` (`string`, `enum` with `values`, `int`, `bool`, `path`) and a `help` line. It may also have a `default` and a `pattern`. Inputs without a default are required.
+- A step lists what it reports under `outputs`, each with a `help` line. The step reports a value by writing `key=value` lines to `$FLOW_OUTPUT`, or the value is taken from its output with a `regex`. If a step succeeds without reporting a declared value, it fails.
+- Later steps can only use `{{ outputs.<step>.<key> }}` for values that step declares. A `decide` step always reports `choice`.
+- The top-level `outputs` are what the run returns. Each one is taken `from: <step>.<key>`, and it is `null` when the path the run took skipped that step.
 
 **Steps** (`type`):
 - `run` runs a shell command (`cmd`) or a script in `steps/` (`script`).

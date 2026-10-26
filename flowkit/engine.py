@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from . import decide, secrets
-from .model import FlowError, is_human_fail, render
+from .model import FlowError, flow_outputs, is_human_fail, render
 from .store import project_dir, script_hashes
 from .trace import scrub
 
@@ -80,7 +80,7 @@ def run_step(store, flow, node_id, n, st):
             outputs[k.strip()] = secrets.mask(scrub(v.strip()), svals)
     os.unlink(out_file)
     for k, spec in (n.get("outputs") or {}).items():
-        m = re.search(spec["regex"], text, re.M)
+        m = re.search(spec["regex"], text, re.M) if spec.get("regex") else None  # no regex: written to $FLOW_OUTPUT
         if m:
             outputs[k] = m.group(1) if m.groups() else m.group(0)
     return code, text[-TAIL:], outputs
@@ -108,8 +108,11 @@ def pause(store, st, status, pending, **extra):
     return res
 
 
-def finish(store, st, status, **extra):
-    res = {"status": status, "run": st["run"], **extra, "outputs": st["outputs"], "steps": _summary(st["log"])}
+def finish(store, st, status, flow=None, **extra):
+    declared = bool(flow and flow.get("outputs"))
+    res = {"status": status, "run": st["run"], **extra,
+           "outputs": flow_outputs(flow, st["outputs"]) if declared else st["outputs"],
+           **({"step_outputs": st["outputs"]} if declared else {}), "steps": _summary(st["log"])}
     st.update(status=status, finished=time.time(), result=res)
     st.pop("pending", None)
     store.save_run(st)
@@ -164,7 +167,7 @@ def run(store, st):
             return finish(store, st, "error", error=f"unknown node {cur}")
         t = n.get("type", "run")
         if t == "end":
-            return finish(store, st, "done", say=render(n.get("say", ""), ctx_for(st, st.get("last_out", ""))))
+            return finish(store, st, "done", flow, ended=cur, say=render(n.get("say", ""), ctx_for(st, st.get("last_out", ""))))
         if t == "run":
             t0 = time.time()
             if n.get("script") and not st.setdefault("script_ok", {}).get(cur):
@@ -191,6 +194,10 @@ def run(store, st):
                 if post != 0:
                     code, tail = 1, (tail + f"\n[flow] the step exited 0 but its check still fails: {n['check']}\n"
                                      + ctail)[-TAIL:]
+            missing = [o for o in n.get("outputs") or {} if o not in outs]
+            if code == 0 and missing:  # a step's declared outputs are its contract with later steps
+                code, tail = 1, (tail + f"\n[flow] the step exited 0 but did not report {', '.join(missing)} "
+                                        f"(write key=value lines to $FLOW_OUTPUT)")[-TAIL:]
             if n.get("check") and n.get("learned_from"):
                 record_step(store, st, cur, n, needed=True, worked=code == 0)
             if outs:
@@ -259,6 +266,9 @@ def run(store, st):
                 else:
                     choice = n["options"][0] if code == 0 else n["options"][1]
                 st["last_out"] = tail
+                missing = [o for o in n.get("outputs") or {} if o not in outs]
+                if choice is not None and missing:
+                    tail, choice = tail + f"\n[flow] the check did not report {', '.join(missing)}", None
                 if choice is not None:
                     st["outputs"][cur] = {**outs, "choice": choice}
                 log.append({"node": cur, "by": "check", "choice": choice, "exit": code})

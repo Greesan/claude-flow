@@ -87,7 +87,7 @@ def test_rename_rewrites_edges_and_output_templates():
 
 def test_remove_input_refuses_while_used():
     g = linear(cmd="echo {{ inputs.x }}")
-    g["inputs"] = {"x": {"type": "string", "default": "1"}}
+    g["inputs"] = {"x": {"type": "string", "default": "1", "help": "x"}}
     with pytest.raises(OpError, match="used by"):
         apply_op(g, {"op": "remove_input", "name": "x"})
 
@@ -197,7 +197,8 @@ def test_run_is_pinned_to_its_version():
 
 def test_inputs_are_checked_and_shell_quoted(isolated):
     g = linear(cmd="echo {{ inputs.name }}")
-    g["inputs"] = {"name": {"type": "string"}, "mode": {"type": "enum", "values": ["a", "b"], "default": "a"}}
+    g["inputs"] = {"name": {"type": "string", "help": "who"},
+                   "mode": {"type": "enum", "values": ["a", "b"], "default": "a", "help": "how"}}
     s = make("f", g)
     with pytest.raises(FlowError, match="missing required"):
         start(s)
@@ -273,9 +274,32 @@ def test_step_timeout():
 
 
 def test_outputs_from_flow_output_file_and_regex():
-    g = linear(cmd='echo "path=/x/y.apk" >> "$FLOW_OUTPUT"; echo "size 12M"', outputs={"size": {"regex": r"size (\S+)"}})
+    g = linear(cmd='echo "path=/x/y.apk" >> "$FLOW_OUTPUT"; echo "size 12M"',
+               outputs={"path": {"help": "the apk"}, "size": {"regex": r"size (\S+)", "help": "its size"}})
     g["nodes"]["done"]["say"] = "{{ outputs.a.path }} {{ outputs.a.size }}"
-    assert start(make("f", g))["say"] == "/x/y.apk 12M"
+    g["outputs"] = {"apk": {"from": "a.path", "help": "where the apk is"}}
+    r = start(make("f", g))
+    assert r["say"] == "/x/y.apk 12M" and r["outputs"] == {"apk": "/x/y.apk"} and r["ended"] == "done"
+    assert r["step_outputs"]["a"]["size"] == "12M"
+
+
+def test_templates_and_flow_outputs_may_only_use_declared_outputs():
+    g = linear(cmd='echo "path=/x" >> "$FLOW_OUTPUT"')
+    g["nodes"]["done"]["say"] = "{{ outputs.a.path }}"
+    assert any("does not declare output 'path'" in e for e in validate(g))
+    g["nodes"]["a"]["outputs"] = {"path": {}}
+    assert any("needs 'help'" in e for e in validate(g))
+    g["nodes"]["a"]["outputs"] = {"path": {"help": "p"}}
+    g["outputs"] = {"apk": {"from": "a.nope", "help": "x"}}
+    assert any("is not an output a step declares" in e for e in validate(g))
+    g["inputs"] = {"x": {"type": "string"}}
+    assert any("add a 'help' line" in e for e in validate(g))
+
+
+def test_a_step_that_does_not_report_a_declared_output_fails():
+    g = linear(cmd="true", outputs={"path": {"help": "p"}}, fail="human: no path")
+    r = start(make("f", g))
+    assert r["status"] == "needs_human" and "did not report path" in r["output_tail"]
 
 
 def test_learned_path_is_promoted_after_three_proven_fixes(isolated):
@@ -301,6 +325,7 @@ def picker(prints):
     return {"start": "which", "nodes": {
         "which": {"type": "decide", "question": "Which one?", "by": "output", "options": ["a", "b", "c"],
                   "check": f'echo "note=n1" >> "$FLOW_OUTPUT"; echo thinking; echo {prints}',
+                  "outputs": {"note": {"help": "a note"}},
                   "branches": {"a": "done_a", "b": "done_b", "c": "done_b"}},
         "done_a": {"type": "end", "say": "A {{ outputs.which.choice }} {{ outputs.which.note }}"},
         "done_b": {"type": "end", "say": "B"}}}
