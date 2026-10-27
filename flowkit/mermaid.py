@@ -11,6 +11,19 @@ def _t(text, n=48):
     return t.replace('"', "'").replace("<", "‹").replace(">", "›").replace("|", "/").replace("`", "'")
 
 
+def _success_path(flow):
+    """Steps reachable from the start without taking a failure (`fail` edges and recovery paths)."""
+    nodes, seen, todo = flow["nodes"], set(), [flow.get("start")]
+    while todo:
+        k = todo.pop()
+        if k in seen or k not in nodes:
+            continue
+        seen.add(k)
+        n = nodes[k]
+        todo += [n[x] for x in ("ok", "next") if isinstance(n.get(x), str)] + list((n.get("branches") or {}).values())
+    return seen
+
+
 def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
     """child_heads = {called flow: its head version}, to mark pins that are behind."""
     stats = stats or {}
@@ -84,11 +97,23 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
                 when = ((" (check passes)" if opts and opt == opts[0] else " (check fails)")
                         if n.get("check") and n.get("by", "exit") == "exit" else "")
                 L.append(f'  {k} -->|"{_t(opt + when, 30)}"| {tgt}')  # quoted: brackets in a bare label break Mermaid
-    L += ["  classDef learned fill:#fff3cd,stroke:#b8860b,color:#1f2328",
-          "  classDef promoted fill:#d4edda,stroke:#2e7d32,color:#1f2328",
+    # Fill = the step's role: where it starts, where it ends, the failure handling, and hand-offs to a person/Claude.
+    # Border = where a step came from: learned from a fix (dashed until it proves itself, then solid).
+    L += ["  classDef start fill:#dbe7fb,stroke:#2f6fbf,stroke-width:2px,color:#1f2328",
+          "  classDef done fill:#d4edda,stroke:#2e7d32,stroke-width:2px,color:#1f2328",
+          "  classDef failpath fill:#fde9c8,stroke:#b8741a,color:#1f2328",
           "  classDef humanfail fill:#f8d7da,stroke:#a33,color:#1f2328",
+          "  classDef learned stroke:#b8860b,stroke-width:2px,stroke-dasharray:5 3",
+          "  classDef promoted stroke:#b8860b,stroke-width:2.5px",
           "  classDef current stroke:#d00,stroke-width:4px"]
+    happy = _success_path(flow)
     for k, n in nodes.items():
+        role = ("start" if k == flow.get("start") else "done" if n.get("type") == "end" and k in happy
+                else "failpath" if k not in happy else None)
+        if role:
+            L.append(f"  class {k} {role}")
+        if n.get("type", "run") == "run" and [r for r in n.get("recover") or [] if r.get("status") != "dropped"]:
+            L.append(f"  class {k}__why failpath")
         if n.get("learned_from"):
             L.append(f"  class {k} {'promoted' if status.get(n['learned_from']) == 'promoted' else 'learned'}")
     if current in nodes:

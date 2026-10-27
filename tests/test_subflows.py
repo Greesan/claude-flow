@@ -152,3 +152,15 @@ def test_chart_labels_with_brackets_are_quoted():
     import re
     bare = [m for m in re.findall(r"\|([^|]*)\|", to_mermaid(g)) if re.search(r"[()\[\]{}]", m) and not m.startswith('"')]
     assert bare == []
+
+
+def test_chart_colors_start_done_and_failure_steps():
+    g = {"start": "a", "nodes": {
+        "a": {"type": "run", "cmd": "x", "effect": "read", "ok": "done", "fail": "cleanup",
+              "recover": [{"id": "r1", "when": "w", "match": "m", "to": "fix"}]},
+        "fix": {"type": "run", "cmd": "y", "effect": "read", "ok": "a"},
+        "cleanup": {"type": "end", "say": "gave up"},
+        "done": {"type": "end"}}}
+    chart = to_mermaid(g)
+    for line in ("class a start", "class done done", "class fix failpath", "class cleanup failpath", "class a__why failpath"):
+        assert line in chart, line
