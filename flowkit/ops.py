@@ -14,7 +14,7 @@ from .model import DEFAULT_SIDE, ID, clone, is_human_fail, recover_ids
 ADDITIVE = {"add_node", "add_recover", "learn_path", "add_input"}
 OPS = {"add_node", "update_node", "remove_node", "rename_node", "set_edge", "add_recover", "remove_recover",
        "set_recover_status", "promote_recover", "drop_recover", "learn_path", "add_input", "remove_input",
-       "set_meta", "replace_graph"}
+       "set_meta", "pin_flow", "replace_graph"}
 
 
 class OpError(Exception):
@@ -32,6 +32,8 @@ def touched(op):
         return {("graph",)}
     if o in ("set_meta",):
         return {("meta",)}
+    if o == "pin_flow":
+        return {("uses", op["flow"])}
     if o in ("add_input", "remove_input"):
         return {("input", op["name"])}
     if o == "rename_node":
@@ -266,12 +268,22 @@ def apply_op(graph, op):
         (g.get("inputs") or {}).pop(op["name"], None)
 
     elif o == "set_meta":
-        for k in ("about", "start", "env", "env_passthrough", "secrets_from", "timeout"):
+        for k in ("about", "start", "outputs", "env", "env_passthrough", "secrets_from", "timeout"):
             if k in op:
                 if op[k] is None:
                     g.pop(k, None)
                 else:
                     g[k] = op[k]
+
+    elif o == "pin_flow":  # move a called flow's pin (flow upgrade); the store re-validates against that version
+        pin = (g.get("uses") or {}).get(op["flow"])
+        if not pin:
+            raise OpError(f"this flow does not call '{op['flow']}'")
+        if not isinstance(op.get("version"), int) or op["version"] < 1:
+            raise OpError("pin_flow needs an integer version")
+        if pin["version"] == op["version"]:
+            raise Merged(f"already pinned to v{op['version']}")
+        g["uses"][op["flow"]] = {**pin, "version": op["version"]}
 
     elif o == "replace_graph":
         g = clone(op["graph"])

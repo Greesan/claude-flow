@@ -130,6 +130,13 @@ nodes:
 - `run` runs a shell command (`cmd`) or a script in `steps/` (`script`).
 - `decide` answers a question with a `check` command or a `script`: exit 0 takes the first option, anything else the second. With `by: output`, the last line it prints names the option, so it can choose among more than two.
 - `confirm` waits for your approval, `human` waits for you to do something, `end` finishes.
+- `flow` runs another saved flow as one step, like a function call (below).
+
+**Flows that run other flows.** A step like `push: {type: flow, flow: git-push-recovery, inputs: {branch: main}, ok: deploy}` runs that flow and continues with its declared `outputs` as `{{ outputs.push.<key> }}`.
+- **One copy.** A flow step can call a flow in its own project or a global one (`~/.claude/flows`). A flow that several projects need lives globally, and `flow promote <name>` moves a project flow there. A name that exists both in the project and globally is rejected, so a project copy can never quietly stand in for the shared one.
+- **Pinned versions.** The caller records the version it was tested with under `uses:`. Edits and learned fixes to the called flow make new versions, but callers keep their pin until `flow upgrade <caller>` moves it. An upgrade is refused if the new version no longer takes the inputs or returns the outputs the caller uses.
+- **Who uses what.** `flow show <name>` lists the flows it calls and the flows that call it, including callers pinned to older versions. Charts draw a flow step as a double-edged box.
+- **Pauses and fixes.** If the called flow stops (an approval, something for you to do, a failure), the caller stops with it and you resume the caller. A failure is fixed and learned in the called flow, so every caller gains the fix. A `fail` edge on the flow step catches a called flow that can't continue.
 
 **`effect`** is required on every `run` step and says how risky it is:
 

@@ -12,7 +12,7 @@ from . import transcripts
 from .engine import PROMOTE_AFTER, run_check, run_step
 from .model import FlowError, clone, node_side, recover_ids, validate
 from .ops import ADDITIVE, OpError, apply_op
-from .store import _atomic_write
+from .store import _atomic_write, resolver
 from .trace import has_secret, is_diagnostic, is_flow_call
 
 LEARN_OPS = {"add_node", "add_recover", "add_input", "update_node", "set_edge", "remove_node"}
@@ -140,7 +140,7 @@ def learn_patch(store, st, patch):
     for op in ops:
         g, _ = apply_op(g, op)
     g = {**g, "version": flow["version"]}
-    errs = validate(g, store.dir)
+    errs = validate(g, store.dir, resolver(g.get("uses")))
     if errs:
         return {"status": "rejected", "error": "patched flow would be invalid: " + "; ".join(errs)}
     checks = {}

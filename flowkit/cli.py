@@ -28,6 +28,8 @@ Editing (every edit is validated, versioned and logged; --base N = the version y
   flow import <flow> <file.yaml> [--global]
   flow commit <flow>                      (record hand edits made to flow.yaml)
   flow revert <flow> --to N
+  flow upgrade <flow> [<called flow>] [--to N]   move the pinned version of flows it calls (checked first)
+  flow promote <flow>                     move a project flow to ~/.claude/flows so other projects can call it
   flow node add <flow> <id> --json '{...}'      flow node set <flow> <id> --json '{"key": value|null}'
   flow node rm <flow> <id> [--rewire NODE]      flow node rename <flow> <id> <new_id>
   flow edge <flow> <node> ok|next|fail|branch:<opt> <target|human: hint|none>
@@ -50,7 +52,7 @@ from pathlib import Path
 from . import engine, hooks, learn, mine
 from .mermaid import to_mermaid
 from .model import FlowError, dump_yaml, load_yaml, resolve_inputs, validate
-from .store import FlowStore, list_flows
+from .store import FlowStore, callers, list_flows, resolve_flow, resolver
 
 EXIT = 0
 BAD = {"error", "rejected", "failed"}
@@ -75,6 +77,33 @@ def signature(g):
     ends = [k for k, n in g["nodes"].items() if n.get("type") == "end"]
     rows += ["#", f"# Ends: {', '.join(ends)} (the result's `ended` says which)"]
     return "\n".join(rows) + "\n"
+
+
+def _child_heads(g):
+    heads = {}
+    for name in g.get("uses") or {}:
+        try:
+            heads[name] = resolve_flow(name)[0].head_version()
+        except FlowError:
+            pass
+    return heads
+
+
+def _calls(s, g):
+    """'Calls' and 'Used by' lines for `flow show` (comment lines, so the YAML below still parses)."""
+    heads, rows = _child_heads(g), []
+    for name, pin in (g.get("uses") or {}).items():
+        behind = f", v{heads[name]} available: `flow upgrade {s.name} {name}`" if heads.get(name, 0) > pin["version"] else ""
+        rows.append(f"#   {name} ({pin['scope']}) pinned v{pin['version']}{behind}")
+    out = ["#", "# Calls:", *rows] if rows else []
+    used = callers(s)
+    if used:
+        def where(d):
+            return "global" if Path(d).parent == Path.home() / ".claude" / "flows" else Path(d).parents[2].name
+        out += ["#", "# Used by:"] + [f"#   {where(c['dir'])}/{c['flow']} pins v{c['version']}"
+                                     + (f" (head is v{s.head_version()})" if c["version"] < s.head_version() else "")
+                                     for c in used]
+    return "\n".join(out) + ("\n" if out else "")
 
 
 def _store(name):
@@ -157,7 +186,10 @@ def main(argv):
     if cmd == "list":
         return out({"flows": [{"name": s.name, "version": s.head_version(), "about": s.load().get("about", ""),
                                "inputs": list((s.load().get("inputs") or {})),
-                               "outputs": list((s.load().get("outputs") or {})), "timing": s.timing(), "where": str(s.dir)}
+                               "outputs": list((s.load().get("outputs") or {})),
+                               "calls": {k: v["version"] for k, v in (s.load().get("uses") or {}).items()},
+                               "used_by": [f"{c['flow']}@v{c['version']}" for c in callers(s)],
+                               "timing": s.timing(), "where": str(s.dir)}
                               for s in list_flows()]})
 
     ap = argparse.ArgumentParser(prog=f"flow {cmd}")
@@ -254,7 +286,7 @@ def main(argv):
         s = _store(a.flow)
         g = s.load(a.version)
         if cmd == "show":
-            sys.stdout.write(signature(g) + "\n" + dump_yaml(g))
+            sys.stdout.write(signature(g) + _calls(s, g) + "\n" + dump_yaml(g))
             tm = s.timing()
             if tm:
                 sys.stdout.write(f"# timing here: run avg {tm['mean']}s, p90 {tm['p90']}s over {tm['runs']} runs; per step: "
@@ -265,7 +297,7 @@ def main(argv):
                                  + ", ".join(f"{k} {v[0]}/{v[1]}" for k, v in stats.items()) + "\n")
             return
         if cmd == "validate":
-            errs = validate(g, s.dir)
+            errs = validate(g, s.dir, resolver(g.get("uses")))
             return out({"status": "ok" if not errs else "invalid", "version": g["version"], "errors": errs,
                         "uncommitted_hand_edits": s.uncommitted()})
         if cmd == "history":
@@ -275,7 +307,7 @@ def main(argv):
             return out({"proposals": [{k: p[k] for k in ("id", "base", "author", "reason", "why")}
                                       | {"ops": [o["op"] for o in p["ops"]]} for p in s.proposals()]})
         st = s.load_run(a.run) if a.run else None
-        text = to_mermaid(g, s.recover_stats(), (st or {}).get("current"), s.timing())
+        text = to_mermaid(g, s.recover_stats(), (st or {}).get("current"), s.timing(), _child_heads(g))
         if a.out:
             Path(a.out).write_text(text)
             return out({"status": "ok", "wrote": a.out, "version": g["version"]})
@@ -318,6 +350,30 @@ def main(argv):
         ap.add_argument("flow")
         a = ap.parse_args(rest)
         return out(_store(a.flow).commit_hand_edit(a.author, a.reason or "hand edit"))
+
+    if cmd == "upgrade":
+        ap.add_argument("flow")
+        ap.add_argument("child", nargs="?")
+        ap.add_argument("--to", type=int)
+        a = ap.parse_args(rest)
+        s = _store(a.flow)
+        uses = s.load().get("uses") or {}
+        names = [a.child] if a.child else list(uses)
+        ops = []
+        for name in names:
+            if name not in uses:
+                raise FlowError(f"{a.flow} does not call {name}")
+            want = a.to or FlowStore(name, scope=uses[name]["scope"]).head_version()
+            if want != uses[name]["version"]:
+                ops.append({"op": "pin_flow", "flow": name, "version": want})
+        if not ops:
+            return out({"status": "unchanged", "uses": uses})
+        return _edit(s, ops, a)
+
+    if cmd == "promote":
+        ap.add_argument("flow")
+        a = ap.parse_args(rest)
+        return out(_store(a.flow).promote(a.author))
 
     if cmd == "revert":
         ap.add_argument("flow")

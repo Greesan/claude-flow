@@ -1,12 +1,20 @@
 about: 'git push, recovering from: remote ahead (rebase, never force), HTTPS auth (switch the remote to SSH), transient network
-  (wait, retry). Anything else goes to Claude.'
+  (wait, retry). Anything else goes to Claude. Other flows call it for their push step.'
 inputs:
   remote:
     type: string
     default: origin
     pattern: '[A-Za-z0-9._-]+'
     help: remote to push to
+  branch:
+    type: string
+    default: HEAD
+    pattern: '[A-Za-z0-9._/-]+'
+    help: branch to push (HEAD = the current branch)
 outputs:
+  pushed:
+    from: report.pushed
+    help: the commit now on the remote (short hash and subject)
   ssh_url:
     from: set_ssh.url
     help: the remote's new SSH URL, when the run switched it from HTTPS (else null)
@@ -16,10 +24,10 @@ start: push
 nodes:
   push:
     type: run
-    cmd: git push {{ inputs.remote }}
+    cmd: git push {{ inputs.remote }} {{ inputs.branch }}
     effect: idempotent
     timeout: 120
-    ok: done
+    ok: report
     recover:
     - id: rebase_remote_ahead
       status: promoted
@@ -40,7 +48,7 @@ nodes:
   pull_rebase:
     type: run
     effect: idempotent
-    cmd: git pull --rebase {{ inputs.remote }}
+    cmd: git pull --rebase {{ inputs.remote }} "$(git rev-parse --abbrev-ref {{ inputs.branch }})"
     timeout: 120
     ok: push
     fail: rebase_abort
@@ -75,6 +83,14 @@ nodes:
     cmd: sleep 5
     effect: read
     ok: push
+  report:
+    type: run
+    effect: read
+    cmd: echo "pushed=$(git log -1 --format='%h %s')" >> "$FLOW_OUTPUT"
+    outputs:
+      pushed:
+        help: the commit now on the remote
+    ok: done
   done:
     type: end
-    say: Pushed to {{ inputs.remote }}. {{ last_output }}
+    say: Pushed {{ outputs.report.pushed }} to {{ inputs.remote }}.

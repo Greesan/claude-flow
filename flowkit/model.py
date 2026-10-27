@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-NODE_TYPES = {"run", "decide", "confirm", "human", "end"}
+NODE_TYPES = {"run", "decide", "confirm", "human", "end", "flow"}
 INPUT_TYPES = {"string", "enum", "int", "bool", "path"}
 EFFECTS = {"read", "idempotent", "once"}
 STATUSES = {"provisional", "promoted", "dropped"}
@@ -23,8 +23,10 @@ KEYS = {
     "confirm": {"type", "say", "next", "learned_from", "note"},
     "human": {"type", "say", "next", "learned_from", "note"},
     "end": {"type", "say", "note"},
+    "flow": {"type", "flow", "inputs", "ok", "fail", "note", "learned_from"},
 }
-TOP_KEYS = {"name", "version", "about", "inputs", "outputs", "env", "env_passthrough", "secrets_from", "timeout", "start", "nodes", "script_hashes"}
+MAX_CALL_DEPTH = 4
+TOP_KEYS = {"name", "version", "about", "inputs", "outputs", "uses", "env", "env_passthrough", "secrets_from", "timeout", "start", "nodes", "script_hashes"}
 OUTPUT_KEYS = {"help", "regex"}
 INPUT_KEYS = {"type", "default", "required", "help", "values", "pattern"}
 RECOVER_KEYS = {"id", "when", "match", "to", "status", "gate", "cmds", "learned_at"}
@@ -124,13 +126,24 @@ def template_refs(node):
             strs.append(node[k])
     strs += [a for a in node.get("args", []) if isinstance(a, str)]
     strs += [v for v in (node.get("env") or {}).values() if isinstance(v, str)]
+    if node.get("type") == "flow":
+        strs += [v for v in (node.get("inputs") or {}).values() if isinstance(v, str)]
     return [m.group(1) for s in strs for m in TEMPLATE.finditer(s)]
 
 
 # ---------- outputs ----------
-def produces(n):
-    """The output keys a step promises: its declared `outputs`, plus `choice` for a decide step."""
+def produces(n, child=None):
+    """The output keys a step promises: its declared `outputs`, `choice` for a decide step, and for a flow step the
+    called flow's declared `outputs` (child = that flow's graph; unknown without a resolver)."""
+    if n.get("type") == "flow":
+        return set((child or {}).get("outputs") or {})
     return set(n.get("outputs") or {}) | ({"choice"} if n.get("type") == "decide" else set())
+
+
+def called(g):
+    """Names of the flows this flow's `flow` steps call."""
+    return sorted({n["flow"] for n in (g.get("nodes") or {}).values()
+                   if isinstance(n, dict) and n.get("type") == "flow" and isinstance(n.get("flow"), str)})
 
 
 def _output_errors(k, n):
@@ -147,6 +160,44 @@ def _output_errors(k, n):
                 re.compile(spec["regex"])
             except (TypeError, re.error):
                 errs.append(f"{k}: output '{o}': bad regex")
+    return errs
+
+
+def _flow_step_errors(g, k, n, resolve, children):
+    errs = []
+    name = n.get("flow")
+    if not isinstance(name, str) or not ID.match(name):
+        return [f"{k}: flow step needs 'flow: <name>'"]
+    if name == g.get("name"):
+        return [f"{k}: a flow cannot call itself"]
+    if not isinstance(n.get("inputs") or {}, dict):
+        return [f"{k}: inputs must be a mapping of the called flow's inputs"]
+    if resolve is None:
+        return errs
+    pin = (g.get("uses") or {}).get(name) or {}
+    try:
+        child, _ = resolve(name, pin.get("version"))
+    except FlowError as e:
+        return [f"{k}: {e}"]
+    children[k] = child
+    spec = child.get("inputs") or {}
+    given = n.get("inputs") or {}
+    errs += [f"{k}: {name} has no input '{x}' (it takes {sorted(spec) or 'none'})" for x in sorted(set(given) - set(spec))]
+    errs += [f"{k}: {name} needs input '{x}' ({spec[x].get('help', '')})" for x in sorted(spec)
+             if x not in given and spec[x].get("default") is None and spec[x].get("required", True)]
+    # no call cycles: follow what the child calls, at its pinned versions
+    stack, depth = [(name, child, 1)], 0
+    while stack:
+        cname, cg, depth = stack.pop()
+        if depth > MAX_CALL_DEPTH:
+            return errs + [f"{k}: flows nest deeper than {MAX_CALL_DEPTH} calls"]
+        for sub in called(cg):
+            if sub == g.get("name"):
+                return errs + [f"{k}: call cycle {g.get('name')} -> {name} -> ... -> {cname} -> {sub}"]
+            try:
+                stack.append((sub, resolve(sub, ((cg.get("uses") or {}).get(sub) or {}).get("version"))[0], depth + 1))
+            except FlowError as e:
+                errs.append(f"{k}: {cname} calls {sub}: {e}")
     return errs
 
 
@@ -182,9 +233,13 @@ def recover_ids(g):
 
 
 # ---------- validation ----------
-def validate(g, flow_dir=None):
-    """Static checks. Returns a list of problems (empty = valid)."""
+def validate(g, flow_dir=None, resolve=None):
+    """Static checks. Returns a list of problems (empty = valid).
+
+    resolve(name, version) -> (graph, scope) loads a called flow (raising FlowError when it is missing or ambiguous);
+    without it, `flow` steps are checked only for shape."""
     errs = []
+    children = {}  # node id -> the called flow's graph, when it could be loaded
     for k in set(g) - TOP_KEYS:
         errs.append(f"unknown top-level key '{k}'")
     nodes = g.get("nodes")
@@ -221,6 +276,8 @@ def validate(g, flow_dir=None):
             continue
         for extra in set(n) - KEYS[t]:
             errs.append(f"{k}: unknown key '{extra}' for a {t} node")
+        if t == "flow":
+            errs += _flow_step_errors(g, k, n, resolve, children)
         if t == "run":
             if bool(n.get("cmd")) == bool(n.get("script")):
                 errs.append(f"{k}: a run node needs exactly one of 'cmd' or 'script'")
@@ -287,12 +344,15 @@ def validate(g, flow_dir=None):
                 errs.append(f"{k}: template '{ref}' names an undeclared input")
             elif parts[0] == "outputs" and (len(parts) != 3 or parts[1] not in nodes):
                 errs.append(f"{k}: template '{ref}' must be outputs.<node>.<key>")
-            elif parts[0] == "outputs" and parts[2] not in produces(nodes[parts[1]]):
+            elif parts[0] == "outputs" and (nodes[parts[1]].get("type") != "flow" or parts[1] in children) \
+                    and parts[2] not in produces(nodes[parts[1]], children.get(parts[1])):
                 errs.append(f"{k}: template '{ref}': step '{parts[1]}' does not declare output '{parts[2]}'")
             elif parts[0] == "run" and (len(parts) != 2 or parts[1] not in ("id", "dir", "flow")):
                 errs.append(f"{k}: template '{ref}' must be run.id, run.dir or run.flow")
             elif parts[0] not in ("inputs", "outputs", "run", "last_output"):
                 errs.append(f"{k}: unknown template '{ref}'")
+        if t == "flow" and not n.get("ok"):
+            errs.append(f"{k}: flow step needs an 'ok' edge")
         if t != "end" and not edges(n) and not (t == "run" and is_human_fail(n.get("fail"))):
             errs.append(f"{k}: no way out")
     for name, spec in (g.get("outputs") or {}).items():
@@ -302,8 +362,12 @@ def validate(g, flow_dir=None):
             errs.append(f"output '{name}': bad name")
         if not isinstance(spec, dict) or set(spec) - {"from", "help"} or not spec.get("help"):
             errs.append(f"output '{name}': needs 'from: <step>.<key>' and 'help'")
-        elif node not in nodes or key not in produces(nodes[node]):
+        elif node not in nodes or ((nodes[node].get("type") != "flow" or node in children)
+                                   and key not in produces(nodes[node], children.get(node))):
             errs.append(f"output '{name}': from '{src}' is not an output a step declares")
+    if resolve or g.get("uses"):
+        if sorted(g.get("uses") or {}) != called(g):
+            errs.append(f"uses must pin exactly the flows called ({called(g)}), found {sorted(g.get('uses') or {})}")
     if errs:
         return errs
 

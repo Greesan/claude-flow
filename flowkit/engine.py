@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 
 from . import decide, secrets
-from .model import FlowError, flow_outputs, is_human_fail, render
-from .store import project_dir, script_hashes
+from .model import FlowError, flow_outputs, is_human_fail, render, resolve_inputs
+from .store import FlowStore, project_dir, resolver, script_hashes
 from .trace import scrub
 
 MAX_STEPS, PROMOTE_AFTER, DROP_AFTER, PRUNE_AFTER, TAIL, DEFAULT_TIMEOUT = 50, 3, 2, 3, 1500, 600
@@ -286,20 +286,108 @@ def run(store, st):
                 return pause(store, st, "needs_claude", {"type": "decide", "node": cur}, question=n["question"],
                              options=n["options"])
             st["current"] = n["branches"][choice]
+        elif t == "flow":
+            res = _start_child(store, st, flow, cur, n)
+            out = _after_child(store, st, flow, cur, n, res)
+            if out is not None:
+                return out
         elif t in ("confirm", "human"):
             return pause(store, st, "needs_confirm" if t == "confirm" else "needs_human", {"type": t, "node": cur},
                          say=render(n["say"], ctx_for(st, st.get("last_out", ""))))
     return finish(store, st, "error", error="step limit hit (loop?)")
 
 
+# ---------- flows that call flows ----------
+def _resume_child(cs, cst, flags):
+    par = cst.pop("parent")  # resume() refuses runs that have a parent; lift that for the parent's own call
+    try:
+        return resume(cs, cst, flags)
+    finally:
+        latest = cs.load_run(cst["run"]) or cst
+        latest["parent"] = par
+        cs.save_run(latest)
+
+PASS_THROUGH = ("say", "question", "options", "output_tail", "known_paths", "hint", "exit")
+
+
+def _child_store(flow, n):
+    pin = flow["uses"][n["flow"]]
+    resolver(flow["uses"])(n["flow"], pin["version"])  # raises if the name became ambiguous or moved
+    return FlowStore(n["flow"], scope=pin["scope"]), pin["version"]
+
+
+def _start_child(store, st, flow, cur, n):
+    """Run the called flow at its pinned version, as its own run linked to this one."""
+    try:
+        cs, version = _child_store(flow, n)
+        child = cs.load(version)
+        ctx = ctx_for(st, st.get("last_out", ""))
+        inputs = resolve_inputs(child, {k: render(v, ctx) for k, v in (n.get("inputs") or {}).items()})
+    except FlowError as e:
+        return {"status": "error", "error": str(e)}
+    cst = cs.new_run(version, inputs, child["start"])
+    cst["parent"] = {"flow": st["flow"], "run": st["run"], "node": cur}
+    st.setdefault("children", {})[cur] = cst["run"]
+    st["child_t0"] = time.time()
+    return run(cs, cst)
+
+
+def _after_child(store, st, flow, cur, n, res):
+    """Continue the parent after its child ran: None to keep going, else the parent's (paused/finished) result."""
+    child = {"flow": n["flow"], "run": res.get("run"), "node": res.get("node")}
+    status = res.get("status")
+    if status == "done":
+        st["outputs"][cur] = res.get("outputs") or {}
+        st["last_out"] = res.get("say", "")
+        st["log"].append({"node": cur, "flow": n["flow"], "child_run": res.get("run"), "ended": res.get("ended"),
+                          "exit": 0, "s": round(time.time() - st.pop("child_t0", time.time()), 2)})
+        st["current"] = n["ok"]
+        return None
+    if status == "failed" and n.get("fail"):  # the child has no way past this; the parent said where to go instead
+        cs, _ = _child_store(flow, n)
+        _resume_child(cs, cs.load_run(res["run"]), ["--abort"])
+        status, res = "aborted", {**res, "error": f"failed at {res.get('node')}: {res.get('output_tail', '')[-300:]}"}
+    if status in ("needs_confirm", "needs_human", "needs_claude", "failed"):
+        extra = {k: res[k] for k in PASS_THROUGH if k in res}
+        if status in ("needs_claude", "failed"):
+            extra["hint"] = (f"this happened inside {n['flow']} (run {res.get('run')}): fix it there, then "
+                             f"`flow learn {n['flow']} --run {res.get('run')} --propose` so every flow calling "
+                             f"{n['flow']} gains the fix; resume this run with the same flag")
+        return pause(store, st, status, {"type": "child", "node": cur, "flow": n["flow"], "run": res.get("run")},
+                     in_flow=child, **extra)
+    # the child ended in error or was aborted: the step failed
+    st["log"].append({"node": cur, "flow": n["flow"], "child_run": res.get("run"), "exit": 1,
+                      "s": round(time.time() - st.pop("child_t0", time.time()), 2)})
+    why = res.get("error") or status
+    if n.get("fail"):
+        st["last_out"] = f"{n['flow']} {status}: {why}"
+        st["current"] = n["fail"]
+        return None
+    return finish(store, st, "error", error=f"{n['flow']} (run {res.get('run')}) {status}: {why}", in_flow=child)
+
+
 def resume(store, st, flags):
     p = st.get("pending") or {}
+    if st.get("parent") and st.get("status") == "paused":
+        par = st["parent"]
+        raise FlowError(f"this run belongs to {par['flow']} run {par['run']}: resume that instead "
+                        f"(`flow resume {par['flow']} --run {par['run']} ...`)")
     flow = store.load(st["version"])
     n = flow["nodes"][st["current"]]
     if "--abort" in flags:
+        if p.get("type") == "child":  # the paused step is the child's: abort it too
+            cs, _ = _child_store(flow, n)
+            _resume_child(cs, cs.load_run(p["run"]), flags)
         return finish(store, st, "aborted")
     choose = flags[flags.index("--choose") + 1] if "--choose" in flags and flags.index("--choose") + 1 < len(flags) else None
     kind = p.get("type")
+    if kind == "child":
+        cs, _ = _child_store(flow, n)
+        res = _resume_child(cs, cs.load_run(p["run"]), flags)
+        st.pop("pending", None)
+        st["status"] = "running"
+        out = _after_child(store, st, flow, st["current"], n, res)
+        return out if out is not None else run(store, st)
     if kind == "confirm":
         if "--approve" not in flags:
             raise FlowError("this step needs --approve")

@@ -16,10 +16,11 @@ import hashlib
 import json
 import os
 import secrets as _rand
+import shutil
 import time
 from pathlib import Path
 
-from .model import FlowError, dump_yaml, load_yaml, validate
+from .model import FlowError, called, dump_yaml, load_yaml, validate
 from .ops import ADDITIVE, Merged, OpError, apply_op, touched
 
 
@@ -29,6 +30,56 @@ def project_dir():
 
 def flow_roots():
     return [project_dir() / ".claude" / "flows", Path.home() / ".claude" / "flows"]
+
+
+SCOPES = ("project", "global")
+def _callers_file():
+    return Path.home() / ".claude" / "flows" / ".callers.json"
+
+
+def resolve_flow(name):
+    """(FlowStore, scope) for a flow another flow calls. A name defined both in this project and globally is an error:
+    a called flow must be unambiguous, so a project flow can never quietly stand in for the shared one."""
+    found = [sc for sc, r in zip(SCOPES, flow_roots()) if (r / name / "flow.yaml").exists()]
+    if not found:
+        raise FlowError(f"no flow named '{name}' in this project or in ~/.claude/flows")
+    if len(found) > 1:
+        raise FlowError(f"'{name}' exists both in this project and in ~/.claude/flows; rename the project one, or "
+                        f"delete it if the global one replaces it (a called flow must be unambiguous)")
+    return FlowStore(name, scope=found[0]), found[0]
+
+
+def resolver(pins=None):
+    """resolve(name, version) for validate(): loads a called flow at its pinned version (head when unpinned)."""
+    def resolve(name, version=None):
+        st, scope = resolve_flow(name)
+        want = (pins or {}).get(name, {}).get("scope")
+        if want and want != scope:
+            raise FlowError(f"'{name}' is pinned to the {want} flow, but only a {scope} one exists now "
+                            f"(was it moved? `flow upgrade` re-pins it)")
+        return st.load(version), scope
+    return resolve
+
+
+def callers(store):
+    """Who calls this flow, from the registry: [{dir, flow, version}] (one per calling flow, in any project)."""
+    data = json.loads(_callers_file().read_text()) if _callers_file().exists() else {}
+    return sorted(data.get(str(store.dir), {}).values(), key=lambda c: (c["dir"], c["flow"]))
+
+
+def _register_calls(store, g):
+    """Record this flow's pins in the callers registry (and forget pins it no longer has)."""
+    _callers_file().parent.mkdir(parents=True, exist_ok=True)
+    with open(_callers_file().parent / ".callers.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        data = json.loads(_callers_file().read_text()) if _callers_file().exists() else {}
+        me = str(store.dir)
+        for child in data.values():
+            child.pop(me, None)
+        for name, pin in (g.get("uses") or {}).items():
+            child_dir = str(FlowStore(name, scope=pin["scope"]).dir)
+            data.setdefault(child_dir, {})[me] = {"dir": me, "flow": store.name, "version": pin["version"]}
+        _atomic_write(_callers_file(), json.dumps({k: v for k, v in data.items() if v}, indent=1))
 
 
 def list_flows():
@@ -82,11 +133,14 @@ def _read_jsonl(path):
 
 
 class FlowStore:
-    def __init__(self, name, create_global=False):
+    def __init__(self, name, create_global=False, scope=None):
         self.name = name
         roots = flow_roots()
         found = [r / name for r in roots if (r / name / "flow.yaml").exists()]
-        self.dir = found[0] if found else (roots[1] if create_global else roots[0]) / name
+        if scope:
+            self.dir = roots[SCOPES.index(scope)] / name
+        else:
+            self.dir = found[0] if found else (roots[1] if create_global else roots[0]) / name
         self.runs_dir = project_dir() / ".claude" / "flows" / ".runs" / name
 
     # ----- definition -----
@@ -174,7 +228,8 @@ class FlowStore:
                 g["script_hashes"] = script_hashes(g, self.dir)
                 if not g["script_hashes"]:
                     del g["script_hashes"]
-                errs = validate(g, self.dir)
+                self._pin_calls(g)
+                errs = validate(g, self.dir, resolver(g.get("uses")))
                 if errs:
                     raise OpError("result would be invalid: " + "; ".join(errs))
             except (OpError, KeyError, TypeError) as e:
@@ -182,10 +237,62 @@ class FlowStore:
                     return self._propose(ops, author, reason, base, meta=meta, why=f"could not rebase onto v{head_v}: {e}")
                 return {"status": "rejected", "error": str(e)}
             self._write_version(g)
+            if g.get("uses") or (head or {}).get("uses"):
+                _register_calls(self, g)
             _append(self.dir / "history.jsonl", {"version": g["version"], "base": base if base is not None else head_v,
                                                 "rebased": stale, "author": author, "reason": reason,
                                                 "ts": time.time(), "ops": ops, "notes": notes, **({"meta": meta} if meta else {})})
-            return {"status": "applied", "version": g["version"], "rebased": stale, "notes": notes}
+            older = [f"{c['flow']} (pins v{c['version']})" for c in callers(self)]
+            return {"status": "applied", "version": g["version"], "rebased": stale, "notes": notes,
+                    **({"callers_on_older_versions": older, "upgrade": "check them, then `flow upgrade <caller> "
+                        f"{self.name}`"} if older else {})}
+
+    def _pin_calls(self, g):
+        """Pin newly called flows at their head version; keep existing pins; drop pins no longer called."""
+        uses = {k: v for k, v in (g.get("uses") or {}).items() if k in called(g)}
+        for name in called(g):
+            if name not in uses:
+                try:
+                    st, scope = resolve_flow(name)
+                except FlowError:
+                    continue  # validate() reports it
+                uses[name] = {"scope": scope, "version": st.head_version()}
+        if uses:
+            g["uses"] = uses
+        else:
+            g.pop("uses", None)
+
+    def scope(self):
+        return "global" if self.dir.parent == flow_roots()[1] else "project"
+
+    def promote(self, author="claude"):
+        """Move a project flow to ~/.claude/flows so other projects can call it, keeping versions and history.
+        Callers in this project are re-pinned to the global copy."""
+        if self.scope() == "global":
+            raise FlowError(f"{self.name} is already global")
+        dest = flow_roots()[1] / self.name
+        if (dest / "flow.yaml").exists():
+            raise FlowError(f"a global flow named {self.name} already exists; rename one of them first")
+        before = callers(self)
+        with self.lock():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(self.dir), str(dest))
+        (dest / ".lock").unlink(missing_ok=True)
+        old, self.dir = self.dir, dest
+        moved = []
+        for c in before:
+            if Path(c["dir"]).parent != old.parent:
+                continue  # other projects could not call a project flow in the first place
+            parent = FlowStore(c["flow"], scope="project")
+            g = parent.load()
+            g["uses"][self.name] = {"scope": "global", "version": g["uses"][self.name]["version"]}
+            res = parent.apply([{"op": "replace_graph", "graph": g}], author, f"{self.name} moved to ~/.claude/flows")
+            moved.append({"flow": c["flow"], **res})
+        data = json.loads(_callers_file().read_text()) if _callers_file().exists() else {}
+        data.pop(str(old), None)
+        if _callers_file().exists():
+            _atomic_write(_callers_file(), json.dumps(data, indent=1))
+        return {"status": "promoted", "flow": self.name, "now": str(dest), "callers_repinned": moved}
 
     def _write_version(self, g):
         vdir = self.dir / "versions"

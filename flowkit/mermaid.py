@@ -1,7 +1,7 @@
 """Mermaid flowchart export. Recovery paths are labelled with their status and evidence (from events)."""
 import re
 
-SHAPE = {"run": ('["', '"]'), "confirm": ('{{"', '"}}'), "human": ('(["', '"])'), "decide": ('{"', '"}'),
+SHAPE = {"flow": ('[["', '"]]'), "run": ('["', '"]'), "confirm": ('{{"', '"}}'), "human": ('(["', '"])'), "decide": ('{"', '"}'),
          "end": ('(("', '"))')}
 
 
@@ -11,7 +11,8 @@ def _t(text, n=48):
     return t.replace('"', "'").replace("<", "‹").replace(">", "›").replace("|", "/").replace("`", "'")
 
 
-def to_mermaid(flow, stats=None, current=None, timing=None):
+def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
+    """child_heads = {called flow: its head version}, to mark pins that are behind."""
     stats = stats or {}
     nodes = flow["nodes"]
     status = {r["id"]: r.get("status", "promoted") for n in nodes.values() for r in n.get("recover") or []}
@@ -19,13 +20,21 @@ def to_mermaid(flow, stats=None, current=None, timing=None):
     for k, n in nodes.items():
         t = n.get("type", "run")
         o, c = SHAPE.get(t, SHAPE["run"])
-        body = {"run": n.get("cmd") or f"script: {n.get('script', '')}", "confirm": n.get("say", ""),
+        pin = (flow.get("uses") or {}).get(n.get("flow"), {})
+        body = {"flow": f"flow: {n.get('flow')} v{pin.get('version', '?')}",
+                "run": n.get("cmd") or f"script: {n.get('script', '')}", "confirm": n.get("say", ""),
                 "human": n.get("say", ""), "decide": _t(n.get("question", "")), "end": n.get("say") or "end"}[t]
         extra = []
         if t == "decide":  # how the question gets answered: the diagnostic command, or a model
             how = ("check: " + _t(n["check"], 44) if n.get("check") else "script: " + n["script"] if n.get("script")
                    else "decided by the decision model" if n.get("jev") else "decided by Claude")
             body += "<br/>" + how + ("<br/><i>(prints the answer)</i>" if n.get("by") == "output" else "")
+        if t == "flow":
+            head = (child_heads or {}).get(n["flow"])
+            if head and pin and head > pin.get("version", 0):
+                extra.append(f"v{head} available")
+            if n.get("inputs"):
+                extra.append("with " + ", ".join(f"{k}={v}" for k, v in n["inputs"].items()))
         if t in ("run", "decide") and n.get("outputs"):
             extra.append("reports: " + ", ".join(n["outputs"]))
         if t == "run":
@@ -41,6 +50,11 @@ def to_mermaid(flow, stats=None, current=None, timing=None):
         L.append(f'  {k}{o}{k}<br/>{body if t == "decide" else _t(body)}{"<br/><i>" + _t("; ".join(extra), 60) + "</i>" if extra else ""}{c}')
     for k, n in nodes.items():
         t = n.get("type", "run")
+        if t == "flow":
+            L.append(f"  {k} -->|ok| {n['ok']}")
+            if n.get("fail"):
+                L.append(f"  {k} -.->|fails| {n['fail']}")
+            L.append(f"  %% link {k} -> {n['flow']}")  # read by chart pages to jump to the called flow's chart
         if t == "run":
             L.append(f"  {k} -->|ok| {n['ok']}")
             f = n.get("fail")
