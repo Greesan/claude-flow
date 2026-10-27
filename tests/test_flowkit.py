@@ -365,3 +365,23 @@ def test_chart_draws_failure_handling_as_a_diamond():
     g["nodes"]["a"]["recover"] = [{"id": "r1", "when": "it broke", "match": "x", "to": "done"}]
     chart = to_mermaid(g)
     assert 'a__why{"what failed?"}' in chart and "r1 · regex" in chart and "a__claude" in chart
+
+
+def test_chart_boxes_are_short_and_the_full_text_is_a_hover_tip():
+    from flowkit.mermaid import to_mermaid
+    long_cmd = "cd android && ./gradlew assembleDebug --no-daemon --console=plain --warning-mode=all"
+    g = linear(cmd=long_cmd, effect="read", timeout=900)
+    chart = to_mermaid(g, timing={"steps": {"a": {"mean": 5.8, "p90": 21.7, "runs": 2}}})
+    box = next(line for line in chart.splitlines() if line.strip().startswith("a["))
+    assert long_cmd not in box and "avg 5.8s" in box and "timeout" not in chart
+    assert f"%% tip a {long_cmd} · avg 5.8s, p90 21.7s (2 runs)" in chart
+
+
+def test_a_finished_run_rebuilds_the_charts_page():
+    from flowkit import charts
+    s = make("f", linear(effect="read"))
+    charts.register_project(os.environ["CLAUDE_PROJECT_DIR"])
+    charts.refresh()
+    assert "avg" not in charts.page_path().read_text()
+    assert start(s)["status"] == "done"
+    assert "avg" in charts.page_path().read_text()

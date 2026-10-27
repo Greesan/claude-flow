@@ -17,7 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import decide, secrets
+from . import charts, decide, secrets
 from .model import FlowError, flow_outputs, is_human_fail, render, resolve_inputs
 from .store import FlowStore, project_dir, resolver, script_hashes
 from .trace import scrub
@@ -116,6 +116,10 @@ def finish(store, st, status, flow=None, **extra):
     st.update(status=status, finished=time.time(), result=res)
     st.pop("pending", None)
     store.save_run(st)
+    if status == "done":  # a finished run changes the measured timings the charts page shows
+        page = charts.refresh()
+        if page:
+            res["charts"] = page
     return res
 
 

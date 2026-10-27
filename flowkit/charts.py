@@ -83,6 +83,7 @@ def _section(s, label):
             pass
     chart = to_mermaid(g, s.recover_stats(), None, tm, heads)
     links = dict(re.findall(r"%% link (\S+) -> (\S+)", chart))
+    tips = dict(re.findall(r"%% tip (\S+) (.*)", chart))
     ins = ", ".join(f"<code>{E(k)}</code>" + (f" = {E(str(v['default']))}" if v.get("default") is not None else " (required)")
                     for k, v in (g.get("inputs") or {}).items()) or "none"
     rows = [("Inputs", ins), ("Returns", ", ".join(f"<code>{E(k)}</code>" for k in (g.get("outputs") or {})) or "nothing")]
@@ -115,7 +116,7 @@ def _section(s, label):
   <div class="head"><h2>{E(s.name)}</h2><span class="tag">v{g['version']} · {E(tag)}</span></div>
   <p>{E(g.get('about', ''))}</p>
   <dl>{dl}</dl>
-  <div class="chart" data-links="{E(json.dumps(links))}"><pre class="mermaid">{E(chart.rstrip())}
+  <div class="chart" data-links="{E(json.dumps(links))}" data-tips="{E(json.dumps(tips))}"><pre class="mermaid">{E(chart.rstrip())}
 </pre></div>
   {table}
 </section>"""

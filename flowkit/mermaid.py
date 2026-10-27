@@ -36,16 +36,18 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
         pin = (flow.get("uses") or {}).get(n.get("flow"), {})
         body = {"flow": f"flow: {n.get('flow')} v{pin.get('version', '?')}",
                 "run": n.get("cmd") or f"script: {n.get('script', '')}", "confirm": n.get("say", ""),
-                "human": n.get("say", ""), "decide": _t(n.get("question", "")), "end": n.get("say") or "end"}[t]
-        extra = []
+                "human": n.get("say", ""), "decide": n.get("question", ""), "end": n.get("say") or "end"}[t]
+        extra, short = [], []
         if t == "decide":  # how the question gets answered: the diagnostic command, or a model
-            how = ("check: " + _t(n["check"], 44) if n.get("check") else "script: " + n["script"] if n.get("script")
-                   else "decided by the decision model" if n.get("jev") else "decided by Claude")
-            body += "<br/>" + how + ("<br/><i>(prints the answer)</i>" if n.get("by") == "output" else "")
+            extra.append("check: " + n["check"] if n.get("check") else "script: " + n["script"] if n.get("script")
+                         else "decided by the decision model" if n.get("jev") else "decided by Claude")
+            if n.get("by") == "output":
+                extra.append("(prints the answer)")
         if t == "flow":
             head = (child_heads or {}).get(n["flow"])
             if head and pin and head > pin.get("version", 0):
                 extra.append(f"v{head} available")
+                short.append(f"v{head} available")
             if n.get("inputs"):
                 extra.append("with " + ", ".join(f"{k}={v}" for k, v in n["inputs"].items()))
         if t in ("run", "decide") and n.get("outputs"):
@@ -54,13 +56,15 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
             tm = ((timing or {}).get("steps") or {}).get(k)
             if tm:
                 extra.append(f"avg {tm['mean']}s, p90 {tm['p90']}s ({tm['runs']} runs)")
+                short.append(f"avg {tm['mean']}s")
             if n.get("check"):
                 extra.append("✓ check: " + n["check"])
             if n.get("secrets"):
                 extra.append("secrets: " + ", ".join(n["secrets"]))
-            if n.get("timeout"):
-                extra.append(f"timeout {n['timeout']}s")
-        L.append(f'  {k}{o}{k}<br/>{body if t == "decide" else _t(body)}{"<br/><i>" + _t("; ".join(extra), 60) + "</i>" if extra else ""}{c}')
+        # The box stays short; the full text is a `%% tip` line that the charts page shows on hover.
+        L.append(f'  {k}{o}{k}<br/>{_t(body, 30)}{"<br/><i>" + _t(" · ".join(short), 30) + "</i>" if short else ""}{c}')
+        tip = " · ".join([re.sub(r"\s+", " ", str(body)).strip()] + extra)
+        L.append(f"  %% tip {k} {tip}")
     for k, n in nodes.items():
         t = n.get("type", "run")
         if t == "flow":
@@ -82,7 +86,8 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
                     L.append(f'  {src} -- "{r["id"]} · {how} · {r.get("status", "promoted")} {good}✓ {bad}✗" --> {r["to"]}')
             edge = "-->|anything else|" if rec else "-.->|fails|"
             if isinstance(f, str) and f.startswith("human:"):
-                L.append(f'  {src} {edge} {k}__human(["{_t(f[6:])}"])')
+                L.append(f'  {src} {edge} {k}__human(["{_t(f[6:], 30)}"])')
+                L.append(f"  %% tip {k}__human {re.sub(r'\s+', ' ', f[6:]).strip()}")
                 L.append(f"  class {k}__human humanfail")
             elif f:
                 L.append(f"  {src} {edge} {f}")

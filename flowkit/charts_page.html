@@ -61,16 +61,15 @@ th { font-weight:600; color:var(--muted); font-size:12px; letter-spacing:.04em; 
 {{SECTIONS}}
 </main>
 <script>
+// Each step's full text (command, checks, timing) shows on hover from the chart's data-tips.
 // Make "runs another flow" steps jump to that flow's chart. Mermaid renders the SVG after load, so nodes are
 // marked as they appear; clicks and keys are handled on the chart container, whoever rendered it.
 (() => {
   const nodeId = g => { const m = (g.id || "").match(/flowchart-(.+)-\d+$/); return m ? m[1] : null; };
-  const target = g => {
-    const chart = g.closest(".chart");
-    let links = {};
-    try { links = JSON.parse(chart.dataset.links || "{}"); } catch (e) {}
-    return links[nodeId(g)] || null;
+  const data = (g, key) => {
+    try { return JSON.parse(g.closest(".chart").dataset[key] || "{}"); } catch (e) { return {}; }
   };
+  const target = g => data(g, "links")[nodeId(g)] || null;
   const jump = name => {
     const sec = document.getElementById("flow-" + name);
     if (!sec) return;
@@ -82,6 +81,12 @@ th { font-weight:600; color:var(--muted); font-size:12px; letter-spacing:.04em; 
   const mark = () => {
     document.querySelectorAll(".chart g.node:not([data-marked])").forEach(g => {
       g.dataset.marked = "1";
+      const tip = data(g, "tips")[nodeId(g)];
+      if (tip) {
+        const t = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        t.textContent = tip;
+        g.prepend(t);
+      }
       const name = target(g);
       if (!name) return;
       g.classList.add("jump");
