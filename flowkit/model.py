@@ -296,6 +296,9 @@ def validate(g, flow_dir=None, resolve=None):
                 errs.append(f"{k}: timeout must be a positive integer (seconds)")
             if not n.get("ok"):
                 errs.append(f"{k}: run node needs an 'ok' edge")
+            elif n.get("fail") == n["ok"]:
+                errs.append(f"{k}: 'ok' and 'fail' both go to {n['ok']}, so the result is ignored; give the failure its "
+                            f"own step, or end the command with `|| true` if it really doesn't matter")
             for s in n.get("secrets") or []:
                 if not SECRET_NAME.match(s):
                     errs.append(f"{k}: secret name '{s}' must be UPPER_SNAKE")

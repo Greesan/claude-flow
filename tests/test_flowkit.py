@@ -164,7 +164,8 @@ def test_parallel_writers_never_lose_updates(isolated):
 
 def test_parallel_additive_writers_all_land(isolated):
     g = linear()
-    g["nodes"]["a"]["fail"] = "done"
+    g["nodes"]["a"]["fail"] = "gave_up"
+    g["nodes"]["gave_up"] = {"type": "end"}
     make("f", g)
 
     def add(i):

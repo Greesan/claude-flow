@@ -54,15 +54,20 @@ nodes:
     fail: rebase_abort
   rebase_abort:
     type: run
-    cmd: git rebase --abort; git status --short | head -20
+    cmd: git rebase --abort && git status --short | head -20
     effect: idempotent
     ok: resolve_conflict
-    fail: resolve_conflict
+    fail: abort_failed
   resolve_conflict:
     type: human
     say: Rebasing onto {{ inputs.remote }} hit conflicts, so the rebase was aborted (local commits are intact). Merge or rebase
       by hand, then resume to push.
     next: push
+  abort_failed:
+    type: human
+    next: push
+    say: The rebase hit conflicts and `git rebase --abort` also failed (output above), so the repo may be stuck mid-rebase.
+      Check `git status`, then finish the rebase (`git rebase --continue`) or abort it by hand, and resume to push.
   confirm_ssh:
     type: confirm
     say: The HTTPS push to {{ inputs.remote }} was refused. Switch {{ inputs.remote }} from https://<host>/<owner>/<repo>

@@ -162,5 +162,12 @@ def test_chart_colors_start_done_and_failure_steps():
         "cleanup": {"type": "end", "say": "gave up"},
         "done": {"type": "end"}}}
     chart = to_mermaid(g)
-    for line in ("class a start", "class done done", "class fix failpath", "class cleanup failpath", "class a__why failpath"):
+    for line in ("class a start", "class done done", "class fix failpath", "class cleanup failpath"):
         assert line in chart, line
+    assert "class a__why" not in chart                                  # the diamond keeps its own color
+
+
+def test_ok_and_fail_to_the_same_step_is_rejected():
+    g = {"start": "a", "nodes": {"a": {"type": "run", "cmd": "x", "effect": "read", "ok": "b", "fail": "b"},
+                                 "b": {"type": "end"}}}
+    assert any("result is ignored" in e for e in validate(g))

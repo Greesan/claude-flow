@@ -109,11 +109,9 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
     happy = _success_path(flow)
     for k, n in nodes.items():
         role = ("start" if k == flow.get("start") else "done" if n.get("type") == "end" and k in happy
-                else "failpath" if k not in happy else None)
+                else "failpath" if k not in happy and n.get("type") != "decide" else None)  # diamonds keep their color
         if role:
             L.append(f"  class {k} {role}")
-        if n.get("type", "run") == "run" and [r for r in n.get("recover") or [] if r.get("status") != "dropped"]:
-            L.append(f"  class {k}__why failpath")
         if n.get("learned_from"):
             L.append(f"  class {k} {'promoted' if status.get(n['learned_from']) == 'promoted' else 'learned'}")
     if current in nodes:
