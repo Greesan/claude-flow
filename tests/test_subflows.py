@@ -171,3 +171,16 @@ def test_ok_and_fail_to_the_same_step_is_rejected():
     g = {"start": "a", "nodes": {"a": {"type": "run", "cmd": "x", "effect": "read", "ok": "b", "fail": "b"},
                                  "b": {"type": "end"}}}
     assert any("result is ignored" in e for e in validate(g))
+
+
+def test_charts_page_rebuilds_on_every_edit_and_asks_to_republish(isolated):
+    from flowkit import charts
+    save("pusher", child(), "global")
+    s = FlowStore("ship", scope="project")
+    res = s.apply([{"op": "replace_graph", "graph": with_effects(parent())}], "t", "x")
+    page = charts.page_path().read_text()
+    assert 'id="flow-ship"' in page and 'id="flow-pusher"' in page and "publish" in res["charts"]["next"]
+    charts.mark_published("https://claude.ai/artifact/X")
+    assert charts.status()["stale"] is False
+    assert s.apply([{"op": "set_meta", "about": "ship it"}], "t", "y")["charts"]["next"].startswith(
+        "republish") and charts.status()["stale"] is True

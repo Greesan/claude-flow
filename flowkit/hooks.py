@@ -20,8 +20,8 @@ import time
 import traceback
 from pathlib import Path
 
-from . import learn, mine, transcripts
-from .store import list_flows
+from . import charts, learn, mine, transcripts
+from .store import list_flows, project_dir
 from .trace import split_steps, strip_heredocs
 
 LOG = Path.home() / ".claude" / "flows" / ".hooks.log"
@@ -81,6 +81,13 @@ def session_start(p):
                      f"so the 2-minute tool timeout cannot cut a step off.")
     if flows:
         lines.append("[flow] Subagents don't see this list: when delegating, tell them which flow to run.")
+        if any(s.scope() == "project" for s in flows):
+            charts.register_project(project_dir())
+        charts.refresh()
+        page = charts.status()
+        if page["stale"] and page["artifact"]:
+            lines.append(f"[flow] The flow charts page changed since it was last published: republish {page['path']} to "
+                         f"{page['artifact']} (Artifact tool, url=...), then `flow charts --published {page['artifact']}`.")
     n, n_cands = mine.nudge() if p.get("source", "startup") == "startup" else ("", 0)
     if n:
         lines.append(f"[{n}")

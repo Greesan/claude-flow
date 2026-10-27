@@ -1,0 +1,108 @@
+<title>Saved Flow Charts</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* layout: one column; per flow: facts, then the chart, then its recovery paths. Called flows link to their own section. */
+:root { --bg:#f6f7f9; --panel:#ffffff; --fg:#1d2330; --muted:#5b6475; --line:#d9dee7; --accent:#2f6fbf; --chip:#e8eef8;
+  --hit:#fff1c2; --sans:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#11151c; --panel:#181d26; --fg:#e4e8ef;
+  --muted:#9aa3b2; --line:#2b3240; --accent:#7fb0ea; --chip:#223047; --hit:#3a3218; color-scheme:dark } }
+:root[data-theme="dark"] { --bg:#11151c; --panel:#181d26; --fg:#e4e8ef; --muted:#9aa3b2; --line:#2b3240; --accent:#7fb0ea;
+  --chip:#223047; --hit:#3a3218; color-scheme:dark }
+html { scroll-behavior:smooth }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior:auto } }
+body { background:var(--bg); color:var(--fg); font:15px/1.55 var(--sans);
+  padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); padding-block:32px 48px }
+main { max-width:1000px; margin:0 auto; display:grid; gap:44px }
+h1 { font-size:26px; margin:0; text-wrap:balance }
+h2 { font:600 19px var(--mono); margin:0; color:var(--accent) }
+p { margin:0; max-width:72ch; color:var(--muted) }
+a { color:var(--accent) }
+a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:2px }
+header, section { display:grid; gap:12px; min-width:0 }
+section { scroll-margin-top:16px; border-radius:10px; padding:4px; margin:-4px; transition:background-color .3s }
+section.hit { background:var(--hit) }
+@media (prefers-reduced-motion: reduce) { section { transition:none } }
+.head { display:flex; flex-wrap:wrap; align-items:baseline; gap:10px }
+.tag { font:12px var(--mono); background:var(--chip); color:var(--fg); padding:2px 8px; border-radius:4px }
+nav { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; font-size:14px }
+nav span { color:var(--muted); font-size:12px; letter-spacing:.06em; text-transform:uppercase }
+dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:0; font-size:14px }
+dt { color:var(--muted) } dd { margin:0; min-width:0 }
+code { font-family:var(--mono); font-size:13px }
+.chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; overflow-x:auto }
+.chart g.node.jump { cursor:pointer }
+.chart g.node.jump:hover rect, .chart g.node.jump:hover polygon { stroke:var(--accent) !important; stroke-width:2.5px !important }
+.chart g.node.jump:focus { outline:none }
+.chart g.node.jump:focus-visible rect, .chart g.node.jump:focus-visible polygon { stroke:var(--accent) !important; stroke-width:3px !important }
+.legend { display:grid; gap:6px; font-size:13.5px; color:var(--muted); max-width:80ch }
+.legend b { color:var(--fg); font-weight:600 }
+.key { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px }
+.sw { display:inline-block; width:14px; height:14px; border-radius:3px; background:var(--sw); border:2px solid var(--sb);
+  vertical-align:-2px; margin-left:6px }
+.sw.dash { border-style:dashed }
+.scroll { overflow-x:auto }
+table { border-collapse:collapse; width:100%; font-size:13.5px }
+th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top }
+th { font-weight:600; color:var(--muted); font-size:12px; letter-spacing:.04em; text-transform:uppercase }
+</style>
+<main>
+<header>
+  <h1>Saved Flow Charts</h1>
+  <p>Every saved flow on this machine, rebuilt by <code>flow</code> whenever one changes{{BUILT}}. Claude runs these when a task matches; the risky steps stop for your approval.</p>
+  <nav aria-label="Flows"><span>Flows</span> {{NAV}}</nav>
+  <div class="legend">
+    <span><b>Shapes:</b> box = a command · double-edged box = runs another saved flow (click it, or Tab to it and press Enter, to jump to that flow) · hexagon = waits for your approval · rounded = you do something · diamond = a decision: a check or script that answers it (shown inside), or <i>what failed?</i>, which picks a recovery path · circle = done.</span>
+    <span class="key"><b>Colors:</b> <i class="sw" style="--sw:#dbe7fb;--sb:#2f6fbf"></i>start <i class="sw" style="--sw:#d4edda;--sb:#2e7d32"></i>done <i class="sw" style="--sw:#fde9c8;--sb:#b8741a"></i>failure handling (only reached when something fails) <i class="sw" style="--sw:#f8d7da;--sb:#a33"></i>stops for you or Claude <i class="sw dash" style="--sw:transparent;--sb:#b8860b"></i>learned from a fix (dashed until it has worked 3 times)</span>
+    <span><b>Arrows:</b> solid = next step when it works · dotted = what happens when it fails (each recovery path shows how it is recognised and its track record ✓/✗).</span>
+    <span><b>Called flows</b> are pinned: the caller keeps the version it was tested with until <code>flow upgrade</code> moves it. "Used by" lists who calls a flow.</span>
+  </div>
+</header>
+{{SECTIONS}}
+</main>
+<script>
+// Make "runs another flow" steps jump to that flow's chart. Mermaid renders the SVG after load, so nodes are
+// marked as they appear; clicks and keys are handled on the chart container, whoever rendered it.
+(() => {
+  const nodeId = g => { const m = (g.id || "").match(/flowchart-(.+)-\d+$/); return m ? m[1] : null; };
+  const target = g => {
+    const chart = g.closest(".chart");
+    let links = {};
+    try { links = JSON.parse(chart.dataset.links || "{}"); } catch (e) {}
+    return links[nodeId(g)] || null;
+  };
+  const jump = name => {
+    const sec = document.getElementById("flow-" + name);
+    if (!sec) return;
+    if (location.hash !== "#flow-" + name) history.pushState(null, "", "#flow-" + name);
+    sec.scrollIntoView({ block: "start" });
+    sec.classList.add("hit");
+    setTimeout(() => sec.classList.remove("hit"), 1400);
+  };
+  const mark = () => {
+    document.querySelectorAll(".chart g.node:not([data-marked])").forEach(g => {
+      g.dataset.marked = "1";
+      const name = target(g);
+      if (!name) return;
+      g.classList.add("jump");
+      g.setAttribute("tabindex", "0");
+      g.setAttribute("role", "link");
+      g.setAttribute("aria-label", "Open the " + name + " flow");
+    });
+  };
+  document.addEventListener("click", e => {
+    const g = e.target.closest && e.target.closest(".chart g.node.jump");
+    if (g) { e.preventDefault(); jump(target(g)); }
+  });
+  document.addEventListener("keydown", e => {
+    const g = e.target.closest && e.target.closest(".chart g.node.jump");
+    if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); jump(target(g)); }
+  });
+  new MutationObserver(mark).observe(document.body, { childList: true, subtree: true });
+  mark();
+  window.addEventListener("load", () => {
+    const sec = location.hash && document.getElementById(location.hash.slice(1));
+    if (sec) sec.scrollIntoView({ block: "start" });
+  });
+})();
+</script>

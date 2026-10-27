@@ -20,6 +20,7 @@ import shutil
 import time
 from pathlib import Path
 
+from . import charts
 from .model import FlowError, called, dump_yaml, load_yaml, validate
 from .ops import ADDITIVE, Merged, OpError, apply_op, touched
 
@@ -242,10 +243,13 @@ class FlowStore:
             _append(self.dir / "history.jsonl", {"version": g["version"], "base": base if base is not None else head_v,
                                                 "rebased": stale, "author": author, "reason": reason,
                                                 "ts": time.time(), "ops": ops, "notes": notes, **({"meta": meta} if meta else {})})
-            older = [f"{c['flow']} (pins v{c['version']})" for c in callers(self)]
+            older = [f"{c['flow']} (pins v{c['version']})" for c in callers(self) if c["version"] < g["version"]]
+            if self.scope() == "project":
+                charts.register_project(project_dir())
+            page = charts.refresh()
             return {"status": "applied", "version": g["version"], "rebased": stale, "notes": notes,
                     **({"callers_on_older_versions": older, "upgrade": "check them, then `flow upgrade <caller> "
-                        f"{self.name}`"} if older else {})}
+                        f"{self.name}`"} if older else {}), **({"charts": page} if page else {})}
 
     def _pin_calls(self, g):
         """Pin newly called flows at their head version; keep existing pins; drop pins no longer called."""

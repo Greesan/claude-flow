@@ -21,6 +21,8 @@ Finding flows to automate (local, no model calls)
 Reading
   flow show <flow> [--version N]         flow validate <flow>
   flow export <flow> [--version N] [--run ID] [--out f.mmd]
+  flow charts [--published URL]          rebuild the page of every flow's chart (automatic after each edit);
+                                         --published records that the current page is live at URL
   flow history <flow>                    flow diff <flow> <vA> <vB>
 
 Editing (every edit is validated, versioned and logged; --base N = the version you looked at)
@@ -49,7 +51,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import engine, hooks, learn, mine
+from . import charts, engine, hooks, learn, mine
 from .mermaid import to_mermaid
 from .model import FlowError, dump_yaml, load_yaml, resolve_inputs, validate
 from .store import FlowStore, callers, list_flows, resolve_flow, resolver
@@ -183,6 +185,15 @@ def main(argv):
             raise FlowError(f"no candidate {a.id} (run `flow mine`)")
         mine.set_status(a.id, "drafting", a.name)
         return out(mine.draft_brief(c, a.name))
+    if cmd == "charts":
+        ap = argparse.ArgumentParser(prog="flow charts")
+        ap.add_argument("--published", metavar="URL", help="record that the current page is live at URL")
+        a = ap.parse_args(rest)
+        if any(f.scope() == "project" for f in list_flows()):
+            charts.register_project(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        if a.published:
+            return out(charts.mark_published(a.published))
+        return out({"status": "ok", "changed": charts.refresh(), **charts.status()})
     if cmd == "list":
         return out({"flows": [{"name": s.name, "version": s.head_version(), "about": s.load().get("about", ""),
                                "inputs": list((s.load().get("inputs") or {})),

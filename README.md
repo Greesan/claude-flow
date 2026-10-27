@@ -60,6 +60,7 @@ flow list                        # flows for this project and your global ones, 
 flow run <name> -i key=value     # prints one JSON result
 flow resume <name> --run <id> --approve
 flow export <name> --out chart.mmd                                                   # Mermaid flowchart
+flow charts                      # the page with every flow's chart (~/.claude/flows/charts.html)
 ```
 
 A finished run returns the flow's declared `outputs` and which `end` step it reached (`ended`). Otherwise it pauses with one of these:
@@ -72,6 +73,8 @@ A finished run returns the flow's declared `outputs` and which `end` step it rea
 | `failed` | no recovery path at all | Claude fixes it, then can teach the flow (below) |
 
 Claude starts slow flows (builds, deploys) in the background, so the 2-minute tool timeout can't cut a step off.
+
+**The charts page** shows every saved flow on the machine: each project's flows and the global ones. A step that runs another flow links to that flow's chart. The page rebuilds by itself whenever a flow gets a new version. Publishing it as a claude.ai artifact is something only Claude can do, so the result of every edit, and the next session start, tell Claude when the page changed and where to republish it. `flow charts --published <url>` records that the live page is current.
 
 ## How flows improve
 
