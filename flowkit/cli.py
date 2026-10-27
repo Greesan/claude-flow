@@ -300,7 +300,8 @@ def main(argv):
             sys.stdout.write(signature(g) + _calls(s, g) + "\n" + dump_yaml(g))
             tm = s.timing()
             if tm:
-                sys.stdout.write(f"# timing here: run avg {tm['mean']}s, p90 {tm['p90']}s over {tm['runs']} runs; per step: "
+                sys.stdout.write((f"# timing here: run avg {tm['mean']}s, p90 {tm['p90']}s over {tm['runs']} runs; "
+                                  if tm["runs"] else "# timing here: no finished runs yet; ") + "per step: "
                                  + ", ".join(f"{k} avg {v['mean']}s" for k, v in tm["steps"].items()) + "\n")
             stats = s.recover_stats()
             if stats:

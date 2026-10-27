@@ -5,7 +5,8 @@ claude.ai artifact, which only Claude can publish. So `refresh()` reports when t
 published, the edit's result passes that on to Claude, and the session-start hook repeats it until
 `flow charts --published <url>` records that the current page is live.
 
-~/.claude/flows/.charts.json  {"projects": [dirs with flows], "artifact": url, "published": sha of the live page}
+~/.claude/flows/.charts.json  {"projects": [dirs with flows], "run_projects": [dirs where a global flow ran],
+                               "artifact": url, "published": sha of the live page}
 ~/.claude/flows/charts.html   the page
 """
 import contextlib
@@ -54,6 +55,15 @@ def register_project(project):
         _save(cfg)
 
 
+def register_run_project(project):
+    """Remember a project where a global flow ran: its runs are kept there, and the page pools them."""
+    project = str(Path(project).resolve())
+    cfg = _config()
+    if project not in cfg.setdefault("run_projects", []):
+        cfg["run_projects"].append(project)
+        _save(cfg)
+
+
 @contextlib.contextmanager
 def _in_project(project):
     old = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -72,9 +82,26 @@ def _where(d):
     return "global" if d.parent == _home() else d.parents[2].name
 
 
+def _global_timing(name):
+    """(timing, number of projects with runs) for a global flow, from its runs in every project it ran in."""
+    from .store import SCOPES, FlowStore, timing_of
+    cfg, runs, where = _config(), [], 0
+    for project in dict.fromkeys(cfg.get("run_projects", []) + cfg.get("projects", [])):
+        if not Path(project).is_dir():
+            continue
+        with _in_project(project):
+            found = FlowStore(name, scope=SCOPES[1]).runs()
+        runs += found
+        where += bool(found)
+    return timing_of(runs), where
+
+
 def _section(s, label):
     from .store import callers, resolve_flow
-    g, tm = s.load(), (s.timing() if label != "global" else None)
+    g, where = s.load(), None
+    tm = s.timing() if label != "global" else None
+    if label == "global":
+        tm, where = _global_timing(s.name)
     heads = {}
     for c in g.get("uses") or {}:
         try:
@@ -101,8 +128,9 @@ def _section(s, label):
         if group:
             kinds.setdefault(group, []).append(k)
     rows.append(("Steps", " · ".join(f"<b>{E(k)}</b>: {', '.join(E(x) for x in v)}" for k, v in kinds.items())))
-    if tm:
-        rows.append(("Timing here", f"avg {tm['mean']}s, p90 {tm['p90']}s over {tm['runs']} runs"))
+    if tm and tm["runs"]:
+        rows.append(("Timing here" if where is None else "Timing", f"avg {tm['mean']}s, p90 {tm['p90']}s over {tm['runs']} runs"
+                     + (f" in {where} project{'s' * (where != 1)}" if where is not None else "")))
     rec = [(k, r) for k, n in g["nodes"].items() for r in n.get("recover") or []]
     table = ""
     if rec:

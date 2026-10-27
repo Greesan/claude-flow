@@ -108,6 +108,31 @@ GITIGNORE = """# flow runtime state (per machine); flow.yaml, versions/, steps/ 
 """
 
 
+def timing_of(runs):
+    """Measured durations (None if nothing measured yet): per run and per step, the average, median and p90 in
+    seconds. Run totals come from finished runs only, each the sum of its own step times, so runs that took
+    different paths (recoveries, skipped checks) are counted as they actually happened. Step times come from every
+    run, failed and paused ones too: a step that ran is measured whatever happened after it. Waits for a person
+    (confirm, human, Claude's choices) are never timed. Nothing extra is recorded."""
+    totals, steps = [], {}
+    for r in runs:
+        ds = [e for e in r.get("log", []) if isinstance(e.get("s"), (int, float))]
+        if r.get("status") == "done":
+            totals.append(sum(e["s"] for e in ds))
+        for e in ds:
+            steps.setdefault(e["node"], []).append(e["s"])
+    if not steps:
+        return None
+
+    def pct(xs, q):
+        xs = sorted(xs)
+        return round(xs[min(len(xs) - 1, int(q * len(xs)))], 1)
+
+    def summary(xs):
+        return {"runs": len(xs), "mean": round(sum(xs) / len(xs), 1), "p50": pct(xs, 0.5), "p90": pct(xs, 0.9)}
+    return {**(summary(totals) if totals else {"runs": 0}), "steps": {k: summary(v) for k, v in steps.items()}}
+
+
 def script_hashes(g, flow_dir):
     """{script: sha256} for every `script:` step, so a pinned run can tell when a script changed under it."""
     out = {}
@@ -372,6 +397,8 @@ class FlowStore:
         st = {"run": rid, "flow": self.name, "version": version, "inputs": inputs, "current": start,
               "status": "running", "started": time.time(), "log": [], "outputs": {}, "tried": {}, "probation": {}}
         self.save_run(st)
+        if self.scope() == "global":
+            charts.register_run_project(project_dir())
         return st
 
     def save_run(self, st):
@@ -403,27 +430,8 @@ class FlowStore:
         return sorted((json.loads(p.read_text()) for p in self.runs_dir.glob("*.json")), key=lambda r: r["started"])
 
     def timing(self):
-        """Measured durations from finished runs here (None if none yet): per run and per step, the average, median
-        and p90 in seconds. A run's total is the sum of its own step times, so runs that took different paths
-        (recoveries, skipped checks) are counted as they actually happened. Nothing extra is recorded."""
-        totals, steps = [], {}
-        for r in self.runs():
-            if r.get("status") != "done":
-                continue
-            ds = [e["s"] for e in r.get("log", []) if isinstance(e.get("s"), (int, float))]
-            totals.append(sum(ds))
-            for e in r.get("log", []):
-                if isinstance(e.get("s"), (int, float)):
-                    steps.setdefault(e["node"], []).append(e["s"])
-        if not totals:
-            return None
-
-        def pct(xs, q):
-            xs = sorted(xs)
-            return round(xs[min(len(xs) - 1, int(q * len(xs)))], 1)
-        def summary(xs):
-            return {"runs": len(xs), "mean": round(sum(xs) / len(xs), 1), "p50": pct(xs, 0.5), "p90": pct(xs, 0.9)}
-        return {**summary(totals), "steps": {k: summary(v) for k, v in steps.items()}}
+        """Measured durations from finished runs here (None if none yet); see `timing_of`."""
+        return timing_of(self.runs())
 
     def propose(self, ops, author, reason, base, why, meta=None):
         with self.lock():

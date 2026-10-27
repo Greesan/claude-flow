@@ -385,3 +385,46 @@ def test_a_finished_run_rebuilds_the_charts_page():
     assert "avg" not in charts.page_path().read_text()
     assert start(s)["status"] == "done"
     assert "avg" in charts.page_path().read_text()
+
+
+def test_a_global_flows_chart_pools_its_runs_from_every_project(tmp_path, monkeypatch):
+    from flowkit import charts
+    from flowkit.store import FlowStore
+    proj_a = Path(os.environ["CLAUDE_PROJECT_DIR"])
+    s = FlowStore("g", scope="global")
+    assert s.apply([{"op": "replace_graph", "graph": linear(effect="read")}], "test", "create")["status"] == "applied"
+    start(s)
+    proj_b = tmp_path / "b"
+    proj_b.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj_b))
+    start(FlowStore("g"))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj_a))
+    tm, where = charts._global_timing("g")
+    assert tm["runs"] == 2 and where == 2
+
+
+def test_decide_steps_are_timed_and_failed_runs_count_for_step_times():
+    g = {"start": "c", "nodes": {
+        "c": {"type": "decide", "question": "Go?", "check": "true", "options": ["yes", "no"],
+              "branches": {"yes": "a", "no": "done"}},
+        "a": {"type": "run", "cmd": "false", "ok": "done", "fail": "human: it broke"},
+        "done": {"type": "end"}}}
+    s = make("d", g)
+    assert start(s)["status"] == "needs_human"
+    tm = s.timing()
+    assert tm["runs"] == 0 and set(tm["steps"]) == {"c", "a"}
+
+
+def test_every_timed_box_says_avg_or_no_runs_yet():
+    from flowkit.mermaid import to_mermaid
+    g = {"start": "c", "nodes": {
+        "c": {"type": "decide", "question": "Go?", "check": "true", "options": ["yes", "no"],
+              "branches": {"yes": "a", "no": "ask"}},
+        "ask": {"type": "decide", "question": "Which?", "options": ["x"], "branches": {"x": "done"}},
+        "a": {"type": "run", "cmd": "true", "ok": "ok2"},
+        "ok2": {"type": "confirm", "say": "sure?", "next": "done"},
+        "done": {"type": "end"}}}
+    boxes = {ln.split("[")[0].split("{")[0].split("(")[0].strip(): ln for ln in to_mermaid(
+        g, timing={"steps": {"a": {"mean": 1.0, "p90": 1.0, "runs": 1}}}).splitlines() if "<br/>" in ln}
+    assert "avg 1.0s" in boxes["a"] and "no runs yet" in boxes["c"]
+    assert "no runs yet" not in boxes["ask"] + boxes["ok2"]           # Claude's choice and a person's wait

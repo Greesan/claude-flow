@@ -116,10 +116,8 @@ def finish(store, st, status, flow=None, **extra):
     st.update(status=status, finished=time.time(), result=res)
     st.pop("pending", None)
     store.save_run(st)
-    if status == "done":  # a finished run changes the measured timings the charts page shows
-        page = charts.refresh()
-        if page:
-            res["charts"] = page
+    if status == "done":  # new timings for the charts page; republishing waits for the session-start reminder
+        charts.refresh()
     return res
 
 
@@ -255,7 +253,7 @@ def run(store, st):
                          hint=f"fix it, then `flow learn {st['flow']} --run {st['run']} --propose` to turn what you did "
                               f"into a verified patch, or resume --done to just retry")
         elif t == "decide":
-            choice = None
+            choice, t0 = None, time.time()  # timed like a step: the check, script or model call (not Claude's answer)
             if n.get("check") or n.get("script"):
                 probe = {k: n[k] for k in ("cwd", "env", "env_passthrough", "secrets", "script", "args") if k in n}
                 if n.get("check"):
@@ -275,7 +273,7 @@ def run(store, st):
                     tail, choice = tail + f"\n[flow] the check did not report {', '.join(missing)}", None
                 if choice is not None:
                     st["outputs"][cur] = {**outs, "choice": choice}
-                log.append({"node": cur, "by": "check", "choice": choice, "exit": code})
+                log.append({"node": cur, "by": "check", "choice": choice, "exit": code, "s": round(time.time() - t0, 2)})
                 if choice is None:
                     return pause(store, st, "needs_claude", {"type": "decide", "node": cur}, question=n["question"],
                                  options=n["options"], output_tail=tail,
@@ -285,7 +283,7 @@ def run(store, st):
                                           {"context": decide.clean_tail(st.get("last_out", ""))})
                 if c:
                     choice = c
-                    log.append({"node": cur, "by": "model", "choice": c, "conf": conf})
+                    log.append({"node": cur, "by": "model", "choice": c, "conf": conf, "s": round(time.time() - t0, 2)})
             if choice is None:
                 return pause(store, st, "needs_claude", {"type": "decide", "node": cur}, question=n["question"],
                              options=n["options"])

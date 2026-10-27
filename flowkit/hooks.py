@@ -67,8 +67,8 @@ def session_start(p):
         for s in flows[:6]:
             g, tm = s.load(), s.timing()
             facts = ([f"inputs: {', '.join(g['inputs'])}"] if g.get("inputs") else []) + \
-                ([f"avg {tm['mean']:.0f}s over {tm['runs']} runs"] if tm else [])
-            if tm and tm["p90"] > SLOW_AFTER:
+                ([f"avg {tm['mean']:.0f}s over {tm['runs']} runs"] if tm and tm["runs"] else [])
+            if tm and tm["runs"] and tm["p90"] > SLOW_AFTER:
                 slow.append(s.name)
             lines.append(f"  - {s.name}{' (' + '; '.join(facts) + ')' if facts else ''}: {g.get('about', '')[:100]}")
     live = [(s, r) for s in flows for r in s.runs() if r.get("status") in ("paused", "running")]

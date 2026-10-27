@@ -52,11 +52,12 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
                 extra.append("with " + ", ".join(f"{k}={v}" for k, v in n["inputs"].items()))
         if t in ("run", "decide") and n.get("outputs"):
             extra.append("reports: " + ", ".join(n["outputs"]))
-        if t == "run":
+        # Timed: the steps the runner does itself. Waits for a person (confirm, human, Claude's choices) are not.
+        if t in ("run", "flow") or (t == "decide" and (n.get("check") or n.get("script") or n.get("jev"))):
             tm = ((timing or {}).get("steps") or {}).get(k)
-            if tm:
-                extra.append(f"avg {tm['mean']}s, p90 {tm['p90']}s ({tm['runs']} runs)")
-                short.append(f"avg {tm['mean']}s")
+            extra.append(f"avg {tm['mean']}s, p90 {tm['p90']}s ({tm['runs']} runs)" if tm else "no runs yet")
+            short.append(f"avg {tm['mean']}s" if tm else "no runs yet")
+        if t == "run":
             if n.get("check"):
                 extra.append("✓ check: " + n["check"])
             if n.get("secrets"):
