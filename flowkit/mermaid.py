@@ -99,11 +99,11 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
                 L.append(f'  {k} -->|"{_t(opt + when, 30)}"| {tgt}')  # quoted: brackets in a bare label break Mermaid
     # Fill = the step's role: where it starts, where it ends, the failure handling, and hand-offs to a person/Claude.
     # Border = where a step came from: learned from a fix (dashed until it proves itself, then solid).
-    # Deep fills with white text: readable whichever theme the chart is drawn in (white on each is 5:1 or better).
-    L += ["  classDef start fill:#1f5fae,stroke:#123d73,stroke-width:2px,color:#ffffff",
-          "  classDef done fill:#1e7a3a,stroke:#124d24,stroke-width:2px,color:#ffffff",
-          "  classDef failpath fill:#a5520c,stroke:#6b3405,color:#ffffff",
-          "  classDef humanfail fill:#b42318,stroke:#7a1810,color:#ffffff",
+    # Deep fills with white text: readable whichever theme the chart is drawn in (white on each is at least 4.6:1, lightened as far as that allows).
+    L += ["  classDef start fill:#2674d5,stroke:#123d73,stroke-width:2px,color:#ffffff",
+          "  classDef done fill:#218640,stroke:#124d24,stroke-width:2px,color:#ffffff",
+          "  classDef failpath fill:#b85b0d,stroke:#6b3405,color:#ffffff",
+          "  classDef humanfail fill:#df2b1e,stroke:#7a1810,color:#ffffff",
           "  classDef learned stroke:#b8860b,stroke-width:2px,stroke-dasharray:5 3",
           "  classDef promoted stroke:#b8860b,stroke-width:2.5px",
           "  classDef current stroke:#d00,stroke-width:4px"]
