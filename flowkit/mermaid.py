@@ -83,7 +83,7 @@ def to_mermaid(flow, stats=None, current=None, timing=None, child_heads=None):
             for i, (opt, tgt) in enumerate((n.get("branches") or {}).items()):
                 when = ((" (check passes)" if opts and opt == opts[0] else " (check fails)")
                         if n.get("check") and n.get("by", "exit") == "exit" else "")
-                L.append(f"  {k} -->|{_t(opt + when, 30)}| {tgt}")
+                L.append(f'  {k} -->|"{_t(opt + when, 30)}"| {tgt}')  # quoted: brackets in a bare label break Mermaid
     L += ["  classDef learned fill:#fff3cd,stroke:#b8860b,color:#1f2328",
           "  classDef promoted fill:#d4edda,stroke:#2e7d32,color:#1f2328",
           "  classDef humanfail fill:#f8d7da,stroke:#a33,color:#1f2328",

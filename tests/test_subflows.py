@@ -142,3 +142,13 @@ def test_chart_draws_a_called_flow_as_a_linked_subroutine():
     chart = to_mermaid(p.load())
     assert 'push[["push<br/>flow: pusher v1' in chart and "%% link push -> pusher" in chart
     assert json.loads(json.dumps(p.load()["uses"]))
+
+
+def test_chart_labels_with_brackets_are_quoted():
+    """Mermaid reads `(`, `[` or `{` inside a bare |label| as a shape and refuses the whole chart."""
+    g = {"start": "c", "nodes": {
+        "c": {"type": "decide", "question": "Clean?", "check": "true", "options": ["yes", "no"],
+              "branches": {"yes": "e", "no": "e"}}, "e": {"type": "end"}}}
+    import re
+    bare = [m for m in re.findall(r"\|([^|]*)\|", to_mermaid(g)) if re.search(r"[()\[\]{}]", m) and not m.startswith('"')]
+    assert bare == []
