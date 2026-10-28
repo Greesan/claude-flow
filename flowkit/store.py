@@ -403,9 +403,9 @@ class FlowStore:
 
     def save_run(self, st):
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        gi = self.runs_dir.parent.parent / ".gitignore"
+        gi = self.runs_dir.parent / ".gitignore"  # .runs/ ignores itself: a repo that only runs global flows stays clean
         if not gi.exists():
-            gi.write_text(GITIGNORE)
+            gi.write_text("# flow run records (per machine)\n*\n")
         _atomic_write(self.runs_dir / f"{st['run']}.json", json.dumps(st))
 
     def load_run(self, run_id=None):

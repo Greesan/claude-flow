@@ -428,3 +428,18 @@ def test_every_timed_box_says_avg_or_no_runs_yet():
         g, timing={"steps": {"a": {"mean": 1.0, "p90": 1.0, "runs": 1}}}).splitlines() if "<br/>" in ln}
     assert "avg 1.0s" in boxes["a"] and "no runs yet" in boxes["c"]
     assert "no runs yet" not in boxes["ask"] + boxes["ok2"]           # Claude's choice and a person's wait
+
+
+def test_running_a_global_flow_leaves_nothing_for_git_to_track(tmp_path, monkeypatch):
+    import subprocess
+    from flowkit.store import FlowStore
+    s = FlowStore("g", scope="global")
+    assert s.apply([{"op": "replace_graph", "graph": linear(effect="read")}], "test", "create")["status"] == "applied"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    start(FlowStore("g"))
+    assert (repo / ".claude" / "flows" / ".runs").is_dir()
+    untracked = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+                               capture_output=True, text=True, check=True).stdout
+    assert ".claude" not in untracked, untracked
